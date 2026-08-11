@@ -52,9 +52,9 @@ pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use skill::{Skill, SkillRegistry};
-pub use task::{Task, TaskManager, TaskStatus};
+pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
 pub use team::{MessageBus, Teammate, TeammateManager, TeammateState, TeamMessage, VALID_MSG_TYPES};
-pub use todo::{TodoItem, TodoManager, TodoStatus};
+pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
 pub use worktree::{EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
@@ -100,7 +100,7 @@ pub async fn run_task(
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
     let mut executor = Executor::new(
-        Box::from(provider),
+        provider,
         registry,
         auto_approve,
         runtime,

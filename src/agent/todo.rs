@@ -7,18 +7,27 @@
 use crate::tools::{Tool, ToolResult};
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of todo items the model may track at once.
+const MAX_TODOS: usize = 20;
+
 /// A single todo item.
+///
+/// Ids are assigned by the manager on every update (the Nth item in the
+/// list gets id N); the serde default lets the tool parse model-provided
+/// items that carry no id.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TodoItem {
+    #[serde(default)]
     pub id: usize,
     pub text: String,
     pub status: TodoStatus,
 }
 
 /// Todo lifecycle status.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -29,29 +38,78 @@ pub enum TodoStatus {
 #[derive(Debug, Default)]
 pub struct TodoManager {
     items: Vec<TodoItem>,
-    next_id: usize,
+    /// The current agent turn, recorded by the executor each loop
+    /// iteration via [`TodoManager::note_turn`].
+    current_turn: u32,
+    /// The turn in which the list was last updated, if ever.
+    last_update_turn: Option<u32>,
 }
 
 impl TodoManager {
-    /// Replace the whole list with the given items (max 20, one
-    /// `in_progress` allowed).
+    /// Replace the whole list with the given items.
+    ///
+    /// Constraints (matching the s03 reference): at most [`MAX_TODOS`]
+    /// items, every item needs non-empty text, and at most one item may be
+    /// `in_progress`. On success the manager assigns positional ids
+    /// (1-based) and records the current turn as the last-update turn.
     pub fn update(&mut self, items: Vec<TodoItem>) -> anyhow::Result<()> {
-        // TODO(s03): validate count <= 20, require text, enforce the
-        // single-in-progress invariant, assign ids, render back.
-        self.items = items;
+        if items.len() > MAX_TODOS {
+            anyhow::bail!("Max {MAX_TODOS} todos allowed");
+        }
+        let mut validated = Vec::with_capacity(items.len());
+        let mut in_progress = 0usize;
+        for (index, item) in items.into_iter().enumerate() {
+            let id = index + 1;
+            let text = item.text.trim();
+            if text.is_empty() {
+                anyhow::bail!("Item {id}: text required");
+            }
+            if item.status == TodoStatus::InProgress {
+                in_progress += 1;
+            }
+            validated.push(TodoItem { id, text: text.to_string(), status: item.status });
+        }
+        if in_progress > 1 {
+            anyhow::bail!("Only one item can be in_progress at a time");
+        }
+        self.items = validated;
+        self.last_update_turn = Some(self.current_turn);
         Ok(())
     }
 
     /// Render the list as a readable snapshot for the model.
     pub fn render(&self) -> String {
-        // TODO(s03): `[ ]` / `[>]` / `[x] #id: text` + (done/total).
-        self.items.iter().map(|i| format!("{:?}: {}", i.status, i.text)).collect::<Vec<_>>().join("\n")
+        if self.items.is_empty() {
+            return "No todos.".to_string();
+        }
+        let mut lines = Vec::with_capacity(self.items.len() + 1);
+        for item in &self.items {
+            let marker = match item.status {
+                TodoStatus::Pending => "[ ]",
+                TodoStatus::InProgress => "[>]",
+                TodoStatus::Completed => "[x]",
+            };
+            lines.push(format!("{marker} #{}: {}", item.id, item.text));
+        }
+        let done = self.items.iter().filter(|i| i.status == TodoStatus::Completed).count();
+        lines.push(format!("\n({done}/{total} completed)", done = done, total = self.items.len()));
+        lines.join("\n")
     }
 
-    /// Number of turns since the last update (used by the nag).
+    /// Record the current agent turn; the executor calls this at the start
+    /// of every loop iteration so the nag can measure how many turns have
+    /// passed since the model last updated its plan.
+    pub fn note_turn(&mut self, turn: u32) {
+        self.current_turn = turn;
+    }
+
+    /// Number of turns since the last update (used by the nag); 0 when the
+    /// list has never been updated.
     pub fn turns_since_update(&self) -> u32 {
-        // TODO(s03): track last-update turn; return 0 when never updated.
-        0
+        match self.last_update_turn {
+            Some(last) => self.current_turn.saturating_sub(last),
+            None => 0,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -75,13 +133,44 @@ impl Tool for TodoUpdateTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO(s03): full schema with items array + status enum.
-        serde_json::json!({ "type": "object", "properties": {}, "required": [] })
+        let status = serde_json::json!({
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed"],
+            "description": "Lifecycle status"
+        });
+        let item = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string", "description": "What to do" },
+                "status": status
+            },
+            "required": ["text", "status"]
+        });
+        let items = serde_json::json!({
+            "type": "array",
+            "items": item,
+            "description": "The complete todo list; ids are assigned by the harness"
+        });
+        serde_json::json!({
+            "type": "object",
+            "properties": { "items": items },
+            "required": ["items"]
+        })
     }
 
-    fn execute(&self, _args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        // TODO(s03): parse items, delegate to manager.update, return render().
-        Ok(ToolResult::err("todo_update not implemented yet"))
+    fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        let Some(items_val) = args.get("items") else {
+            return Err(anyhow::anyhow!("todo_update: missing required argument 'items'"));
+        };
+        let items: Vec<TodoItem> = match serde_json::from_value(items_val.clone()) {
+            Ok(items) => items,
+            Err(e) => return Ok(ToolResult::err(format!("todo_update: invalid items: {e}"))),
+        };
+        let mut manager = self.manager.lock().unwrap();
+        match manager.update(items) {
+            Ok(()) => Ok(ToolResult::ok(manager.render())),
+            Err(e) => Ok(ToolResult::err(e.to_string())),
+        }
     }
 }
 

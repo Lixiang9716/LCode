@@ -88,6 +88,10 @@ impl Executor {
             }
 
             turn += 1;
+            // Record the turn so the todo manager can measure how many
+            // turns have passed since the model last updated its plan
+            // (s03 nag).
+            self.todo.lock().unwrap().note_turn(turn);
             self.runtime.publish(AgentEvent::TurnStarted { turn });
             tracing::debug!(turn, "Agent turn");
 
