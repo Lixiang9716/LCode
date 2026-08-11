@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use crate::llm::{ChatMessage, LlmResponse, ToolDefinition};
 
 /// Trait that all LLM providers must implement.
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Send a chat completion request to the LLM.
