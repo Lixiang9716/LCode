@@ -44,14 +44,17 @@ mod todo;
 mod worktree;
 
 pub use background::{BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask};
-pub use compaction::{AUTO_COMPACT_THRESHOLD, estimate_tokens};
+pub use compaction::{
+    auto_compact, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
+    PRESERVE_RESULT_TOOLS, estimate_tokens,
+};
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
 pub use memory::ConversationMemory;
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
-pub use skill::{Skill, SkillRegistry};
+pub use skill::{LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
 pub use team::{MessageBus, Teammate, TeammateManager, TeammateState, TeamMessage, VALID_MSG_TYPES};
@@ -85,10 +88,10 @@ pub async fn run_task(
     let todo = Arc::new(Mutex::new(TodoManager::default()));
     todo::register(&mut registry, todo.clone());
     skill::register(&mut registry, workspace.join("skills"));
-    compaction::register(&mut registry);
-    let background = Arc::new(
-        BackgroundManager::new(config)?.with_events(runtime.events_sender()),
-    );
+    // The synchronous `compact` tool gets its own provider instance (as
+    // Arc) built from the same config; the executor owns the other one.
+    compaction::register(&mut registry, Arc::from(build_provider(config)?), workspace.clone());
+    let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
     task::register(&mut registry, &workspace);
     team::register(&mut registry, &workspace);

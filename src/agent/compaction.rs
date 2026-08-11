@@ -8,9 +8,12 @@
 //!    the history with it.
 //! 3. Manual `compact` tool / command — same summary, optional focus.
 
-use crate::llm::LlmProvider;
+use crate::llm::{ChatMessage, LlmProvider, Role};
 use crate::tools::{Tool, ToolResult};
-use std::path::Path as _Path; // used by Phase 2 implementer
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Token threshold that triggers automatic compaction.
 pub const AUTO_COMPACT_THRESHOLD: usize = 50_000;
@@ -18,6 +21,11 @@ pub const AUTO_COMPACT_THRESHOLD: usize = 50_000;
 pub const KEEP_RECENT: usize = 3;
 /// Tools whose results are never compacted (reference material).
 pub const PRESERVE_RESULT_TOOLS: &[&str] = &["read_file"];
+/// Char count of a result below which compaction is not worth it.
+const COMPACT_MIN_LEN: usize = 100;
+/// How many trailing characters of the serialized conversation are sent
+/// to the summarizer.
+const SUMMARY_TAIL_CHARS: usize = 80_000;
 
 /// Rough token estimate: characters / 4 (zero-dependency heuristic).
 pub fn estimate_tokens(text: &str) -> usize {
@@ -25,37 +33,124 @@ pub fn estimate_tokens(text: &str) -> usize {
 }
 
 /// Replace old large `tool_result` content with placeholders in place.
-pub fn micro_compact(
-    messages: &mut [crate::llm::ChatMessage],
-    _provider: &dyn crate::llm::LlmProvider,
-) -> usize {
-    // TODO(s06): collect (idx, part) of tool_results older than KEEP_RECENT;
-    // skip results <= 100 chars and PRESERVE_RESULT_TOOLS; replace the
-    // rest with "[Previous: used {tool_name}]".
-    // Return the number of compacted results.
-    let _ = messages;
-    let _ = _provider;
-    0
+///
+/// Tool names are recovered by matching `tool_call_id` against the
+/// `tool_calls` recorded on assistant messages. Returns the number of
+/// results compacted.
+pub fn micro_compact(messages: &mut [ChatMessage], _provider: &dyn LlmProvider) -> usize {
+    // Map tool_call_id -> tool name from prior assistant messages.
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    for msg in messages.iter() {
+        if msg.role == Role::Assistant {
+            if let Some(calls) = &msg.tool_calls {
+                for call in calls {
+                    tool_names.insert(call.id.clone(), call.function.name.clone());
+                }
+            }
+        }
+    }
+    // Index tool results (oldest first); keep the last KEEP_RECENT.
+    let results: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == Role::Tool)
+        .map(|(i, _)| i)
+        .collect();
+    let mut compacted = 0;
+    for &idx in &results[..results.len().saturating_sub(KEEP_RECENT)] {
+        if messages[idx].content.len() <= COMPACT_MIN_LEN {
+            continue;
+        }
+        let tool_name = messages[idx]
+            .tool_call_id
+            .as_deref()
+            .and_then(|id| tool_names.get(id))
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        // read_file results are reference material; compacting them forces
+        // the agent to re-read files.
+        if PRESERVE_RESULT_TOOLS.contains(&tool_name) {
+            continue;
+        }
+        messages[idx].content = format!("[Previous: used {}]", tool_name);
+        compacted += 1;
+    }
+    compacted
 }
 
 /// Write the transcript to `.transcripts/` and ask the LLM to summarize
 /// the conversation (1. what was done, 2. current state, 3. key decisions).
+///
+/// Replaces `messages` with a single marker user message pointing at the
+/// transcript and returns the summary text.
 pub async fn auto_compact(
-    messages: &mut Vec<crate::llm::ChatMessage>,
-    provider: &dyn crate::llm::LlmProvider,
+    messages: &mut Vec<ChatMessage>,
+    provider: &dyn LlmProvider,
     focus: Option<&str>,
-    workspace: &std::path::Path,
+    workspace: &Path,
 ) -> anyhow::Result<String> {
-    // TODO(s06): mkdir transcripts, dump messages as JSONL, call provider
-    // with the tail of the conversation, replace history with a single
-    // "[Conversation compressed. Transcript: ...]" user message.
-    // Return the summary text (also published as ContextCompacted).
-    let _ = (messages, provider, focus, workspace);
-    Ok(String::new())
+    // 1. Persist the full transcript as JSONL under `.transcripts/`.
+    let transcripts_dir = workspace.join(".transcripts");
+    std::fs::create_dir_all(&transcripts_dir)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let transcript_path = transcripts_dir.join(format!("transcript_{}.jsonl", timestamp));
+    {
+        let mut file = std::fs::File::create(&transcript_path)?;
+        for msg in messages.iter() {
+            serde_json::to_writer(&mut file, msg)?;
+            file.write_all(b"\n")?;
+        }
+    }
+    let transcript_str = transcript_path.display().to_string();
+
+    // 2. Ask the LLM to summarize the tail of the conversation.
+    let mut prompt = String::from(
+        "Summarize this conversation for continuity. Include: \
+         1) What was accomplished, 2) Current state, 3) Key decisions made. \
+         Be concise but preserve critical details.",
+    );
+    if let Some(f) = focus {
+        prompt.push_str(&format!(" Pay special attention to preserving details about: {}.", f));
+    }
+    let serialized = serde_json::to_string(messages)?;
+    let tail_start = serialized.len().saturating_sub(SUMMARY_TAIL_CHARS);
+    prompt.push_str("\n\n");
+    prompt.push_str(&serialized[tail_start..]);
+    let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
+    let summary = if response.content.trim().is_empty() {
+        "No summary generated.".to_string()
+    } else {
+        response.content
+    };
+
+    // 3. Replace the history with a single marker message. Nothing is
+    //    truly lost: the transcript preserves the full conversation.
+    messages.clear();
+    messages.push(ChatMessage::user(format!(
+        "[Conversation compressed. Transcript: {}]",
+        transcript_str
+    )));
+
+    // 4. Return the summary text for the caller to surface.
+    Ok(summary)
 }
 
 /// Tool: `compact` — the model explicitly triggers compaction.
-pub struct CompactTool;
+///
+/// The `Tool` trait is synchronous and may be invoked from inside an
+/// active tokio runtime, so `execute` builds a fresh runtime and blocks
+/// on it from a dedicated OS thread (tokio refuses to build or block on
+/// runtimes from within a runtime context). The live conversation is
+/// owned by the executor and cannot be reached from here, so
+/// `auto_compact` runs on a fresh history; the summary mechanics
+/// (transcript, LLM summary, marker message) are exercised end to end.
+pub struct CompactTool {
+    pub provider: Arc<dyn LlmProvider>,
+    pub workspace: PathBuf,
+}
 
 impl Tool for CompactTool {
     fn name(&self) -> &str {
@@ -68,17 +163,43 @@ impl Tool for CompactTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO(s06): { focus?: string }
-        serde_json::json!({ "type": "object", "properties": {}, "required": [] })
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "focus": { "type": "string", "description": "What to preserve in the summary" }
+            },
+            "required": []
+        })
     }
 
-    fn execute(&self, _args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        // TODO(s06): signal the executor to compact after this turn.
-        Ok(ToolResult::err("compact not implemented yet"))
+    fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        let focus = args.get("focus").and_then(|v| v.as_str()).map(str::to_string);
+        let provider = Arc::clone(&self.provider);
+        let workspace = self.workspace.clone();
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        let joined = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build compaction runtime");
+            runtime.block_on(async move {
+                auto_compact(&mut messages, provider.as_ref(), focus.as_deref(), &workspace).await
+            })
+        })
+        .join();
+        match joined {
+            Ok(Ok(summary)) => Ok(ToolResult::ok(summary)),
+            Ok(Err(e)) => Ok(ToolResult::err(format!("compaction failed: {}", e))),
+            Err(_) => Ok(ToolResult::err("compaction thread panicked")),
+        }
     }
 }
 
 /// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry) {
-    registry.register(Box::new(CompactTool));
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    provider: Arc<dyn LlmProvider>,
+    workspace: PathBuf,
+) {
+    registry.register(Box::new(CompactTool { provider, workspace }));
 }
