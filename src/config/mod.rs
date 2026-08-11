@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration structure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// LLM provider settings
     #[serde(default)]
@@ -24,16 +24,6 @@ pub struct Config {
     /// Tool-specific settings
     #[serde(default)]
     pub tools: ToolsConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            llm: LlmConfig::default(),
-            agent: AgentConfig::default(),
-            tools: ToolsConfig::default(),
-        }
-    }
 }
 
 /// LLM provider configuration.
@@ -160,7 +150,8 @@ fn default_temperature() -> f32 {
 fn default_system_prompt() -> String {
     "You are LCode, an expert software engineer and coding agent. \
      You help users write, review, debug, and understand code. \
-     Be concise, accurate, and helpful.".into()
+     Be concise, accurate, and helpful."
+        .into()
 }
 fn default_max_turns() -> u32 {
     100
@@ -326,8 +317,8 @@ fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
 
 /// Persist a config value to the global config file.
 fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
-    let config_path = global_config_path()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
+    let config_path =
+        global_config_path().ok_or_else(|| anyhow::anyhow!("Cannot determine config directory"))?;
 
     // Ensure parent directory exists
     if let Some(parent) = config_path.parent() {
@@ -354,7 +345,10 @@ fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
         "agent.max_turns" => cfg.agent.max_turns = value.parse()?,
         "agent.require_approval" => cfg.agent.require_approval = value.parse()?,
         "tools.enable_web" => cfg.tools.enable_web = value.parse()?,
-        _ => anyhow::bail!("Unknown config key: {}. Use `lcode config list` to see available keys.", key),
+        _ => anyhow::bail!(
+            "Unknown config key: {}. Use `lcode config list` to see available keys.",
+            key
+        ),
     }
 
     // Write config
@@ -650,15 +644,9 @@ mod tests {
 
         // get_config_value reads the same values back (api_key is masked).
         assert_eq!(get_config_value(&parsed, "llm.provider").unwrap(), "openai");
-        assert_eq!(
-            get_config_value(&parsed, "llm.api_key").unwrap(),
-            mask_key("sk-secret-1234")
-        );
+        assert_eq!(get_config_value(&parsed, "llm.api_key").unwrap(), mask_key("sk-secret-1234"));
         assert_eq!(get_config_value(&parsed, "llm.model").unwrap(), "gpt-4o");
-        assert_eq!(
-            get_config_value(&parsed, "llm.api_base").unwrap(),
-            "https://api.example.com"
-        );
+        assert_eq!(get_config_value(&parsed, "llm.api_base").unwrap(), "https://api.example.com");
         assert_eq!(get_config_value(&parsed, "llm.max_tokens").unwrap(), "2048");
     }
 
@@ -672,7 +660,8 @@ mod tests {
         set_config_value("llm.provider", "anthropic").unwrap();
 
         let parsed: Config =
-            toml::from_str(&std::fs::read_to_string(global_config_path().unwrap()).unwrap()).unwrap();
+            toml::from_str(&std::fs::read_to_string(global_config_path().unwrap()).unwrap())
+                .unwrap();
         assert_eq!(parsed.llm.provider, "anthropic");
     }
 

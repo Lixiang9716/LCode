@@ -49,16 +49,9 @@ async fn main() -> anyhow::Result<()> {
 /// - `RUST_LOG=lcode=debug` for debug output
 /// - `RUST_LOG=info` for info and above
 fn setup_logging() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let layer = fmt::layer()
-        .with_target(false)
-        .with_file(true)
-        .with_line_number(true);
+    let layer = fmt::layer().with_target(false).with_file(true).with_line_number(true);
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(layer)
-        .init();
+    tracing_subscriber::registry().with(filter).with(layer).init();
 }

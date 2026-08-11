@@ -36,6 +36,8 @@ pub struct Plan {
     pub steps: Vec<PlanStep>,
     /// Overall plan status
     pub status: PlanStatus,
+    /// Maximum number of execution turns budgeted for this plan
+    pub max_turns: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +74,7 @@ impl Planner {
                 status: StepStatus::Pending,
             }],
             status: PlanStatus::Draft,
+            max_turns: self.max_turns,
         }
     }
 
@@ -131,86 +134,126 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_next_step_respects_dependency_order() {
-        let planner = Planner::new(50);
-        let mut plan = planner.create_plan("task");
-        plan.steps = vec![
-            PlanStep { number: 1, description: "step 1".into(), depends_on: vec![], status: StepStatus::Pending },
-            PlanStep { number: 2, description: "step 2".into(), depends_on: vec![1], status: StepStatus::Pending },
-            PlanStep { number: 3, description: "step 3".into(), depends_on: vec![2], status: StepStatus::Pending },
-        ];
+#[test]
+fn test_next_step_respects_dependency_order() {
+    let planner = Planner::new(50);
+    let mut plan = planner.create_plan("task");
+    plan.steps = vec![
+        PlanStep {
+            number: 1,
+            description: "step 1".into(),
+            depends_on: vec![],
+            status: StepStatus::Pending,
+        },
+        PlanStep {
+            number: 2,
+            description: "step 2".into(),
+            depends_on: vec![1],
+            status: StepStatus::Pending,
+        },
+        PlanStep {
+            number: 3,
+            description: "step 3".into(),
+            depends_on: vec![2],
+            status: StepStatus::Pending,
+        },
+    ];
 
-        // Step 1 has no dependencies, so it comes first.
-        assert_eq!(planner.next_step(&plan).unwrap().number, 1);
+    // Step 1 has no dependencies, so it comes first.
+    assert_eq!(planner.next_step(&plan).unwrap().number, 1);
 
-        plan.steps[0].status = StepStatus::Completed;
-        // Step 2's dependency is now satisfied.
-        assert_eq!(planner.next_step(&plan).unwrap().number, 2);
+    plan.steps[0].status = StepStatus::Completed;
+    // Step 2's dependency is now satisfied.
+    assert_eq!(planner.next_step(&plan).unwrap().number, 2);
 
-        plan.steps[1].status = StepStatus::Completed;
-        assert_eq!(planner.next_step(&plan).unwrap().number, 3);
+    plan.steps[1].status = StepStatus::Completed;
+    assert_eq!(planner.next_step(&plan).unwrap().number, 3);
 
-        plan.steps[2].status = StepStatus::Completed;
-        assert!(planner.next_step(&plan).is_none());
-    }
+    plan.steps[2].status = StepStatus::Completed;
+    assert!(planner.next_step(&plan).is_none());
+}
 
-    #[test]
-    fn test_next_step_skips_pending_dependencies() {
-        let planner = Planner::new(50);
-        let mut plan = planner.create_plan("task");
-        plan.steps = vec![
-            PlanStep { number: 1, description: "s1".into(), depends_on: vec![], status: StepStatus::Completed },
-            PlanStep { number: 2, description: "s2".into(), depends_on: vec![1], status: StepStatus::Pending },
-            PlanStep { number: 3, description: "s3".into(), depends_on: vec![2], status: StepStatus::Pending },
-        ];
-
-        // Step 3 depends on step 2 which is still pending, so step 2 is next.
-        assert_eq!(planner.next_step(&plan).unwrap().number, 2);
-
-        plan.steps[1].status = StepStatus::Completed;
-        assert_eq!(planner.next_step(&plan).unwrap().number, 3);
-    }
-
-    #[test]
-    fn test_next_step_none_when_all_blocked() {
-        let planner = Planner::new(50);
-        let mut plan = planner.create_plan("task");
-        plan.steps = vec![
-            PlanStep { number: 1, description: "s1".into(), depends_on: vec![], status: StepStatus::InProgress },
-            PlanStep { number: 2, description: "s2".into(), depends_on: vec![1], status: StepStatus::Pending },
-        ];
-
-        // Step 1 is in progress (not pending) and step 2 is blocked on it.
-        assert!(planner.next_step(&plan).is_none());
-    }
-
-    #[test]
-    fn test_next_step_missing_dependency_treated_as_met() {
-        let planner = Planner::new(50);
-        let mut plan = planner.create_plan("task");
-        plan.steps = vec![PlanStep {
+#[test]
+fn test_next_step_skips_pending_dependencies() {
+    let planner = Planner::new(50);
+    let mut plan = planner.create_plan("task");
+    plan.steps = vec![
+        PlanStep {
             number: 1,
             description: "s1".into(),
-            depends_on: vec![99], // no such step
+            depends_on: vec![],
+            status: StepStatus::Completed,
+        },
+        PlanStep {
+            number: 2,
+            description: "s2".into(),
+            depends_on: vec![1],
             status: StepStatus::Pending,
-        }];
+        },
+        PlanStep {
+            number: 3,
+            description: "s3".into(),
+            depends_on: vec![2],
+            status: StepStatus::Pending,
+        },
+    ];
 
-        assert_eq!(planner.next_step(&plan).unwrap().number, 1);
-    }
+    // Step 3 depends on step 2 which is still pending, so step 2 is next.
+    assert_eq!(planner.next_step(&plan).unwrap().number, 2);
 
-    #[test]
-    fn test_progress_with_failures_and_empty_plan() {
-        let planner = Planner::new(50);
-        // Empty plans report 100% to avoid a divide-by-zero.
-        let mut plan = planner.create_plan("x");
-        plan.steps.clear();
-        assert_eq!(planner.progress(&plan), 100.0);
+    plan.steps[1].status = StepStatus::Completed;
+    assert_eq!(planner.next_step(&plan).unwrap().number, 3);
+}
 
-        let mut plan = planner.create_plan("x");
-        plan.steps[0].status = StepStatus::Failed("boom".into());
-        assert_eq!(planner.progress(&plan), 0.0);
+#[test]
+fn test_next_step_none_when_all_blocked() {
+    let planner = Planner::new(50);
+    let mut plan = planner.create_plan("task");
+    plan.steps = vec![
+        PlanStep {
+            number: 1,
+            description: "s1".into(),
+            depends_on: vec![],
+            status: StepStatus::InProgress,
+        },
+        PlanStep {
+            number: 2,
+            description: "s2".into(),
+            depends_on: vec![1],
+            status: StepStatus::Pending,
+        },
+    ];
 
-        plan.steps[0].status = StepStatus::Skipped;
-        assert_eq!(planner.progress(&plan), 100.0);
-    }
+    // Step 1 is in progress (not pending) and step 2 is blocked on it.
+    assert!(planner.next_step(&plan).is_none());
+}
+
+#[test]
+fn test_next_step_missing_dependency_treated_as_met() {
+    let planner = Planner::new(50);
+    let mut plan = planner.create_plan("task");
+    plan.steps = vec![PlanStep {
+        number: 1,
+        description: "s1".into(),
+        depends_on: vec![99], // no such step
+        status: StepStatus::Pending,
+    }];
+
+    assert_eq!(planner.next_step(&plan).unwrap().number, 1);
+}
+
+#[test]
+fn test_progress_with_failures_and_empty_plan() {
+    let planner = Planner::new(50);
+    // Empty plans report 100% to avoid a divide-by-zero.
+    let mut plan = planner.create_plan("x");
+    plan.steps.clear();
+    assert_eq!(planner.progress(&plan), 100.0);
+
+    let mut plan = planner.create_plan("x");
+    plan.steps[0].status = StepStatus::Failed("boom".into());
+    assert_eq!(planner.progress(&plan), 0.0);
+
+    plan.steps[0].status = StepStatus::Skipped;
+    assert_eq!(planner.progress(&plan), 100.0);
+}

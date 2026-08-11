@@ -139,11 +139,7 @@ mod tests {
     fn run_default_max_turns_and_auto_approve() {
         let cli = Cli::try_parse_from(["lcode", "run", "task"]).unwrap();
         match cli.command {
-            Some(Command::Run {
-                max_turns,
-                auto_approve,
-                ..
-            }) => {
+            Some(Command::Run { max_turns, auto_approve, .. }) => {
                 assert_eq!(max_turns, 50);
                 assert!(!auto_approve);
             }
@@ -183,7 +179,8 @@ mod tests {
 
     #[test]
     fn config_set_action() {
-        let cli = Cli::try_parse_from(["lcode", "config", "set", "llm.provider", "openai"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["lcode", "config", "set", "llm.provider", "openai"]).unwrap();
         match cli.command {
             Some(Command::Config { action }) => match action {
                 ConfigAction::Set { key, value } => {

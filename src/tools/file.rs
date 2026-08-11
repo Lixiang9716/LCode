@@ -13,9 +13,7 @@ pub struct ReadFileTool {
 
 impl ReadFileTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -50,9 +48,8 @@ impl Tool for ReadFileTool {
     }
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        let path_str = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        let path_str =
+            args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
 
         let full_path = self.workspace_root.join(path_str);
 
@@ -68,10 +65,7 @@ impl Tool for ReadFileTool {
         let lines: Vec<&str> = content.lines().collect();
 
         let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = args["limit"]
-            .as_u64()
-            .map(|n| n as usize)
-            .unwrap_or(lines.len());
+        let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(lines.len());
 
         let start = offset.min(lines.len());
         let end = (start + limit).min(lines.len());
@@ -103,9 +97,7 @@ pub struct WriteFileTool {
 
 impl WriteFileTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -136,9 +128,8 @@ impl Tool for WriteFileTool {
     }
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        let path_str = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        let path_str =
+            args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
         let content = args["content"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
@@ -154,10 +145,7 @@ impl Tool for WriteFileTool {
 
         let size = content.len();
         let lines = content.lines().count();
-        Ok(ToolResult::ok(format!(
-            "Wrote {} bytes ({} lines) to {}",
-            size, lines, path_str
-        )))
+        Ok(ToolResult::ok(format!("Wrote {} bytes ({} lines) to {}", size, lines, path_str)))
     }
 }
 
@@ -168,9 +156,7 @@ pub struct EditFileTool {
 
 impl EditFileTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -206,9 +192,8 @@ impl Tool for EditFileTool {
     }
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        let path_str = args["path"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+        let path_str =
+            args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
         let old = args["old_string"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'old_string' argument"))?;
@@ -239,10 +224,7 @@ impl Tool for EditFileTool {
         let new_content = content.replacen(old, new, 1);
         std::fs::write(&full_path, new_content)?;
 
-        Ok(ToolResult::ok(format!(
-            "Successfully edited {}",
-            path_str
-        )))
+        Ok(ToolResult::ok(format!("Successfully edited {}", path_str)))
     }
 }
 
@@ -253,9 +235,7 @@ pub struct ListDirTool {
 
 impl ListDirTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -322,23 +302,15 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn setup_test_tool<T: Tool>(_tool: &T) {
-        // Setup if needed
-    }
-
     #[test]
     fn test_read_file() {
         let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "line 1\nline 2\nline 3\n").unwrap();
 
-        let tool = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "test.txt"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"path": "test.txt"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("line 1"));
         assert!(result.output.contains("line 3"));
@@ -348,9 +320,7 @@ mod tests {
     fn test_write_and_read_file() {
         let dir = TempDir::new().unwrap();
 
-        let writer = WriteFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let writer = WriteFileTool { workspace_root: dir.path().to_path_buf() };
         let result = writer
             .execute(&serde_json::json!({
                 "path": "output.txt",
@@ -359,12 +329,8 @@ mod tests {
             .unwrap();
         assert!(result.success);
 
-        let reader = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
-        let result = reader
-            .execute(&serde_json::json!({"path": "output.txt"}))
-            .unwrap();
+        let reader = ReadFileTool { workspace_root: dir.path().to_path_buf() };
+        let result = reader.execute(&serde_json::json!({"path": "output.txt"})).unwrap();
         assert!(result.output.contains("Hello, world!"));
     }
 
@@ -373,9 +339,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("edit.txt"), "hello world\nfoo bar\n").unwrap();
 
-        let tool = EditFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = EditFileTool { workspace_root: dir.path().to_path_buf() };
         let result = tool
             .execute(&serde_json::json!({
                 "path": "edit.txt",
@@ -393,19 +357,12 @@ mod tests {
     #[test]
     fn test_read_file_offset_beyond_lines() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("test.txt"),
-            "line 1\nline 2\nline 3\nline 4\nline 5\n",
-        )
-        .unwrap();
-
-        let tool = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
-
-        let result = tool
-            .execute(&serde_json::json!({"path": "test.txt", "offset": 100}))
+        std::fs::write(dir.path().join("test.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n")
             .unwrap();
+
+        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
+
+        let result = tool.execute(&serde_json::json!({"path": "test.txt", "offset": 100})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("Read 0 lines"));
     }
@@ -413,15 +370,10 @@ mod tests {
     #[test]
     fn test_read_file_limit_truncates() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("test.txt"),
-            "line 1\nline 2\nline 3\nline 4\nline 5\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("test.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n")
+            .unwrap();
 
-        let tool = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool
             .execute(&serde_json::json!({"path": "test.txt", "offset": 1, "limit": 2}))
@@ -435,13 +387,9 @@ mod tests {
     #[test]
     fn test_read_file_not_found() {
         let dir = TempDir::new().unwrap();
-        let tool = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "missing.txt"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"path": "missing.txt"})).unwrap();
         assert!(!result.success);
         assert!(result.output.contains("File not found"));
     }
@@ -449,13 +397,9 @@ mod tests {
     #[test]
     fn test_read_file_is_directory() {
         let dir = TempDir::new().unwrap();
-        let tool = ReadFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "."}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"path": "."})).unwrap();
         assert!(!result.success);
         assert!(result.output.contains("Not a file"));
     }
@@ -463,9 +407,7 @@ mod tests {
     #[test]
     fn test_write_file_creates_nested_dirs() {
         let dir = TempDir::new().unwrap();
-        let tool = WriteFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = WriteFileTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool
             .execute(&serde_json::json!({
@@ -482,28 +424,20 @@ mod tests {
     #[test]
     fn test_write_file_empty_content() {
         let dir = TempDir::new().unwrap();
-        let tool = WriteFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = WriteFileTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "empty.txt", "content": ""}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"path": "empty.txt", "content": ""})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("Wrote 0 bytes (0 lines)"));
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("empty.txt")).unwrap(),
-            ""
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("empty.txt")).unwrap(), "");
     }
 
     #[test]
     fn test_edit_file_old_string_not_found() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("edit.txt"), "hello world\n").unwrap();
-        let tool = EditFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = EditFileTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool
             .execute(&serde_json::json!({
@@ -520,9 +454,7 @@ mod tests {
     fn test_edit_file_not_unique() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("dup.txt"), "abc\ndef\nabc\n").unwrap();
-        let tool = EditFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = EditFileTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool
             .execute(&serde_json::json!({
@@ -542,14 +474,8 @@ mod tests {
     #[test]
     fn test_edit_file_multiline() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("multi.txt"),
-            "fn foo() {\n    old_body\n}\n",
-        )
-        .unwrap();
-        let tool = EditFileTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        std::fs::write(dir.path().join("multi.txt"), "fn foo() {\n    old_body\n}\n").unwrap();
+        let tool = EditFileTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool
             .execute(&serde_json::json!({
@@ -570,13 +496,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir(dir.path().join("subdir")).unwrap();
         std::fs::write(dir.path().join("file.txt"), "x").unwrap();
-        let tool = ListDirTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ListDirTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "."}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"path": "."})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("subdir/"));
         assert!(result.output.contains("file.txt"));
@@ -586,13 +508,9 @@ mod tests {
     #[test]
     fn test_list_dir_not_found() {
         let dir = TempDir::new().unwrap();
-        let tool = ListDirTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = ListDirTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"path": "no_such_dir"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"path": "no_such_dir"})).unwrap();
         assert!(!result.success);
         assert!(result.output.contains("Directory not found"));
     }

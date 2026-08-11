@@ -3,8 +3,8 @@
 //! All LLM backends implement this trait to provide a uniform interface
 //! for chat completion with tool calling support.
 
-use async_trait::async_trait;
 use crate::llm::{ChatMessage, LlmResponse, ToolDefinition};
+use async_trait::async_trait;
 
 /// Trait that all LLM providers must implement.
 #[cfg_attr(test, mockall::automock)]

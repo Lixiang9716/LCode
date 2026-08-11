@@ -101,21 +101,11 @@ pub enum FinishReason {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::System,
-            content: content.into(),
-            tool_call_id: None,
-            tool_calls: None,
-        }
+        Self { role: Role::System, content: content.into(), tool_call_id: None, tool_calls: None }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::User,
-            content: content.into(),
-            tool_call_id: None,
-            tool_calls: None,
-        }
+        Self { role: Role::User, content: content.into(), tool_call_id: None, tool_calls: None }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {

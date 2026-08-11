@@ -31,29 +31,17 @@ pub struct ToolResult {
 impl ToolResult {
     /// Create a successful result.
     pub fn ok(output: impl Into<String>) -> Self {
-        Self {
-            success: true,
-            output: output.into(),
-            data: None,
-        }
+        Self { success: true, output: output.into(), data: None }
     }
 
     /// Create a successful result with structured data.
     pub fn ok_with_data(output: impl Into<String>, data: serde_json::Value) -> Self {
-        Self {
-            success: true,
-            output: output.into(),
-            data: Some(data),
-        }
+        Self { success: true, output: output.into(), data: Some(data) }
     }
 
     /// Create an error result.
     pub fn err(output: impl Into<String>) -> Self {
-        Self {
-            success: false,
-            output: output.into(),
-            data: None,
-        }
+        Self { success: false, output: output.into(), data: None }
     }
 }
 
@@ -90,9 +78,7 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new tool registry with all built-in tools.
     pub fn new(config: &Config) -> anyhow::Result<Self> {
-        let mut registry = Self {
-            tools: Vec::new(),
-        };
+        let mut registry = Self { tools: Vec::new() };
 
         // Register built-in tools
         registry.register(Box::new(file::ReadFileTool::new(config)?));
@@ -170,15 +156,8 @@ mod tests {
         }
     }
 
-    const BUILTIN_TOOLS: [&str; 7] = [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep",
-        "glob",
-        "shell",
-    ];
+    const BUILTIN_TOOLS: [&str; 7] =
+        ["read_file", "write_file", "edit_file", "list_dir", "grep", "glob", "shell"];
 
     #[test]
     fn test_registry_registers_builtin_tools() {
@@ -214,9 +193,7 @@ mod tests {
     fn test_registry_execute_unknown_tool() {
         let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-        let err = registry
-            .execute("no_such_tool", &serde_json::json!({}))
-            .unwrap_err();
+        let err = registry.execute("no_such_tool", &serde_json::json!({})).unwrap_err();
         assert!(err.to_string().contains("Unknown tool"));
         assert!(err.to_string().contains("no_such_tool"));
     }
@@ -225,9 +202,7 @@ mod tests {
     fn test_registry_execute_known_tool() {
         let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-        let result = registry
-            .execute("list_dir", &serde_json::json!({}))
-            .unwrap();
+        let result = registry.execute("list_dir", &serde_json::json!({})).unwrap();
         assert!(result.success);
     }
 

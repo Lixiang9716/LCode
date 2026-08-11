@@ -31,7 +31,7 @@ impl ShellTool {
     fn check_safety(&self, command: &str) -> anyhow::Result<()> {
         let lower = command.trim().to_lowercase();
 
-        // Check denied patterns first
+        // Check denied patterns first (always enforced)
         for denied in &self.denied_commands {
             if lower.contains(&denied.to_lowercase()) {
                 anyhow::bail!(
@@ -42,15 +42,13 @@ impl ShellTool {
             }
         }
 
+        // Commands on the allowlist bypass the dangerous-pattern checks
+        if self.allowed_commands.iter().any(|allowed| lower.starts_with(&allowed.to_lowercase())) {
+            return Ok(());
+        }
+
         // Check specifically dangerous patterns
-        let dangerous = [
-            "rm -rf /",
-            "mkfs.",
-            "dd if=",
-            "> /dev/sda",
-            "fork bomb",
-            ":(){ :|:& };:",
-        ];
+        let dangerous = ["rm -rf /", "mkfs.", "dd if=", "> /dev/sda", "fork bomb", ":(){ :|:& };:"];
 
         for d in &dangerous {
             if lower.contains(d) {
@@ -99,10 +97,7 @@ impl Tool for ShellTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
 
-        let _timeout_secs = args["timeout"]
-            .as_u64()
-            .unwrap_or(self.timeout_secs)
-            .min(300);
+        let _timeout_secs = args["timeout"].as_u64().unwrap_or(self.timeout_secs).min(300);
 
         // Safety check
         self.check_safety(command_str)?;
@@ -125,29 +120,20 @@ impl Tool for ShellTool {
         let mut result_output = String::new();
 
         if exit_code == 0 {
-            result_output.push_str(&format!("✅ Command succeeded (exit code: 0)\n"));
+            result_output.push_str("✅ Command succeeded (exit code: 0)\n");
         } else {
-            result_output.push_str(&format!(
-                "❌ Command failed (exit code: {})\n",
-                exit_code
-            ));
+            result_output.push_str(&format!("❌ Command failed (exit code: {})\n", exit_code));
         }
 
         if !stdout.is_empty() {
             // Truncate output if too long
             let truncated = truncate_output(&stdout, 10000);
-            result_output.push_str(&format!(
-                "--- stdout ---\n{}\n",
-                truncated
-            ));
+            result_output.push_str(&format!("--- stdout ---\n{}\n", truncated));
         }
 
         if !stderr.is_empty() {
             let truncated = truncate_output(&stderr, 5000);
-            result_output.push_str(&format!(
-                "--- stderr ---\n{}\n",
-                truncated
-            ));
+            result_output.push_str(&format!("--- stderr ---\n{}\n", truncated));
         }
 
         Ok(ToolResult::ok(result_output))
@@ -160,17 +146,9 @@ fn truncate_output(s: &str, max_len: usize) -> String {
         return s.to_string();
     }
 
-    let boundary = s[..max_len]
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(max_len);
+    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
 
-    format!(
-        "{}\n... (truncated, total {} bytes)\n",
-        &s[..boundary],
-        s.len()
-    )
+    format!("{}\n... (truncated, total {} bytes)\n", &s[..boundary], s.len())
 }
 
 #[cfg(test)]
@@ -200,9 +178,7 @@ mod tests {
             timeout_secs: 120,
         };
 
-        let result = tool
-            .execute(&serde_json::json!({"command": "echo hello"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"command": "echo hello"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("hello"));
     }
@@ -250,9 +226,8 @@ mod tests {
             timeout_secs: 120,
         };
 
-        let result = tool
-            .execute(&serde_json::json!({"command": "echo warning >&2; echo out"}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"command": "echo warning >&2; echo out"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("Command succeeded"));
         assert!(result.output.contains("--- stdout ---"));
@@ -270,9 +245,8 @@ mod tests {
             timeout_secs: 120,
         };
 
-        let result = tool
-            .execute(&serde_json::json!({"command": "echo oops >&2; exit 3"}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"command": "echo oops >&2; exit 3"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("Command failed"));
         assert!(result.output.contains("exit code: 3"));
@@ -289,15 +263,13 @@ mod tests {
         };
 
         // timeout field must be parsed without error (and clamped to max 300).
-        let result = tool
-            .execute(&serde_json::json!({"command": "echo hi", "timeout": 5}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 5})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("hi"));
 
-        let result = tool
-            .execute(&serde_json::json!({"command": "echo hi", "timeout": 9999}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 9999})).unwrap();
         assert!(result.success);
     }
 }

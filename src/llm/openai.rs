@@ -3,11 +3,11 @@
 //! Supports both OpenAI's native API and OpenAI-compatible APIs
 //! (Ollama, vLLM, local models, etc.)
 
-use async_trait::async_trait;
 use crate::config::LlmConfig;
 use crate::llm::{
-    ChatMessage, FinishReason, LlmResponse, LlmProvider, ToolCallRequest, ToolDefinition, Usage,
+    ChatMessage, FinishReason, LlmProvider, LlmResponse, ToolCallRequest, ToolDefinition, Usage,
 };
+use async_trait::async_trait;
 
 /// OpenAI / OpenAI-compatible provider.
 pub struct OpenAiProvider {
@@ -23,13 +23,13 @@ impl OpenAiProvider {
     /// Create a new OpenAI provider from configuration.
     pub fn new(config: &LlmConfig) -> anyhow::Result<Self> {
         if config.api_key.is_empty() {
-            anyhow::bail!("OpenAI API key is required. Set it via: lcode config set llm.api_key <key>");
+            anyhow::bail!(
+                "OpenAI API key is required. Set it via: lcode config set llm.api_key <key>"
+            );
         }
 
-        let api_base = config
-            .api_base
-            .clone()
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let api_base =
+            config.api_base.clone().unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
         Ok(Self {
             api_key: config.api_key.clone(),
@@ -54,7 +54,7 @@ impl LlmProvider for OpenAiProvider {
         // Build the request body
         let mut body = serde_json::json!({
             "model": self.model,
-            "messages": messages.iter().map(|m| message_to_json(m)).collect::<Vec<_>>(),
+            "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
         });
@@ -130,14 +130,9 @@ fn parse_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
 
     let content = message["content"].as_str().unwrap_or("").to_string();
 
-    let tool_calls = if let Some(tc) = message.get("tool_calls") {
-        Some(
-            serde_json::from_value::<Vec<ToolCallRequest>>(tc.clone())
-                .unwrap_or_default(),
-        )
-    } else {
-        None
-    };
+    let tool_calls = message
+        .get("tool_calls")
+        .map(|tc| serde_json::from_value::<Vec<ToolCallRequest>>(tc.clone()).unwrap_or_default());
 
     let finish_reason = match choice["finish_reason"].as_str() {
         Some("stop") => FinishReason::Stop,
@@ -153,12 +148,7 @@ fn parse_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
         total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
     });
 
-    Ok(LlmResponse {
-        content,
-        tool_calls,
-        usage,
-        finish_reason,
-    })
+    Ok(LlmResponse { content, tool_calls, usage, finish_reason })
 }
 
 #[cfg(test)]

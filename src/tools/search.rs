@@ -14,9 +14,7 @@ pub struct GrepTool {
 
 impl GrepTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -78,12 +76,7 @@ impl Tool for GrepTool {
         }
 
         let lines: Vec<&str> = output.lines().collect();
-        Ok(ToolResult::ok(format!(
-            "Found {} matches for '{}':\n{}",
-            lines.len(),
-            pattern,
-            output
-        )))
+        Ok(ToolResult::ok(format!("Found {} matches for '{}':\n{}", lines.len(), pattern, output)))
     }
 }
 
@@ -106,11 +99,7 @@ fn run_rg(pattern: &str, path: &PathBuf, max_results: usize) -> std::result::Res
 }
 
 /// Built-in grep fallback using Rust iterators.
-fn run_builtin_grep(
-    pattern: &str,
-    path: &PathBuf,
-    max_results: usize,
-) -> anyhow::Result<String> {
+fn run_builtin_grep(pattern: &str, path: &PathBuf, max_results: usize) -> anyhow::Result<String> {
     let regex = regex_lite::Regex::new(pattern)
         .map_err(|e| anyhow::anyhow!("Invalid regex pattern: {}", e))?;
 
@@ -148,9 +137,7 @@ pub struct GlobTool {
 
 impl GlobTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self {
-            workspace_root: std::env::current_dir()?,
-        })
+        Ok(Self { workspace_root: std::env::current_dir()? })
     }
 }
 
@@ -211,10 +198,7 @@ impl Tool for GlobTool {
             .collect();
 
         if matches.is_empty() {
-            return Ok(ToolResult::ok(format!(
-                "No files matching '{}'",
-                pattern_str
-            )));
+            return Ok(ToolResult::ok(format!("No files matching '{}'", pattern_str)));
         }
 
         Ok(ToolResult::ok(format!(
@@ -236,34 +220,24 @@ mod tests {
     fn setup_search_dir() -> TempDir {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("nested")).unwrap();
-        std::fs::write(
-            dir.path().join("alpha.rs"),
-            "fn alpha() {\n    let needle = 42;\n}\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("alpha.rs"), "fn alpha() {\n    let needle = 42;\n}\n")
+            .unwrap();
         std::fs::write(
             dir.path().join("nested/beta.rs"),
             "fn beta() {\n    println!(\"needle here\");\n}\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.path().join("gamma.txt"),
-            "nothing interesting in this text file\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("gamma.txt"), "nothing interesting in this text file\n")
+            .unwrap();
         dir
     }
 
     #[test]
     fn test_grep_finds_matches() {
         let dir = setup_search_dir();
-        let tool = GrepTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GrepTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"pattern": "needle"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"pattern": "needle"})).unwrap();
         assert!(result.success);
         // Both matching files with their line number (file:line) must appear.
         assert!(result.output.contains("alpha.rs:2"));
@@ -278,13 +252,10 @@ mod tests {
     #[test]
     fn test_grep_no_matches() {
         let dir = setup_search_dir();
-        let tool = GrepTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GrepTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"pattern": "zzz_nonexistent_pattern"}))
-            .unwrap();
+        let result =
+            tool.execute(&serde_json::json!({"pattern": "zzz_nonexistent_pattern"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("No matches found"));
     }
@@ -292,9 +263,7 @@ mod tests {
     #[test]
     fn test_grep_invalid_regex() {
         let dir = setup_search_dir();
-        let tool = GrepTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GrepTool { workspace_root: dir.path().to_path_buf() };
 
         // Unbalanced paren is an invalid regex: rg fails and the builtin
         // fallback reports the invalid pattern.
@@ -305,13 +274,9 @@ mod tests {
     #[test]
     fn test_glob_recursive_rs_files() {
         let dir = setup_search_dir();
-        let tool = GlobTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GlobTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"pattern": "**/*.rs"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"pattern": "**/*.rs"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("alpha.rs"));
         assert!(result.output.contains("beta.rs"));
@@ -322,13 +287,9 @@ mod tests {
     #[test]
     fn test_glob_no_matches() {
         let dir = setup_search_dir();
-        let tool = GlobTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GlobTool { workspace_root: dir.path().to_path_buf() };
 
-        let result = tool
-            .execute(&serde_json::json!({"pattern": "*.py"}))
-            .unwrap();
+        let result = tool.execute(&serde_json::json!({"pattern": "*.py"})).unwrap();
         assert!(result.success);
         assert!(result.output.contains("No files matching"));
     }
@@ -336,9 +297,7 @@ mod tests {
     #[test]
     fn test_glob_invalid_pattern() {
         let dir = setup_search_dir();
-        let tool = GlobTool {
-            workspace_root: dir.path().to_path_buf(),
-        };
+        let tool = GlobTool { workspace_root: dir.path().to_path_buf() };
 
         let result = tool.execute(&serde_json::json!({"pattern": "["}));
         assert!(result.is_err());

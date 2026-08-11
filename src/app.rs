@@ -11,11 +11,7 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Repl { prompt } => {
             crate::repl::start(prompt, cfg).await?;
         }
-        Command::Run {
-            task,
-            max_turns,
-            auto_approve,
-        } => {
+        Command::Run { task, max_turns, auto_approve } => {
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
                 anyhow::bail!("Task description cannot be empty. Usage: lcode run \"<task>\"");
@@ -44,12 +40,7 @@ mod tests {
     }
 
     fn cli_with(command: Command) -> Cli {
-        Cli {
-            command: Some(command),
-            verbose: false,
-            project: ".".to_string(),
-            config_file: None,
-        }
+        Cli { command: Some(command), verbose: false, project: ".".to_string(), config_file: None }
     }
 
     /// Point $HOME at a fresh temp dir so `dirs::config_dir()` resolves to an
@@ -65,11 +56,7 @@ mod tests {
 
     #[test]
     fn run_with_empty_task_returns_error() {
-        let cli = cli_with(Command::Run {
-            task: vec![],
-            max_turns: 50,
-            auto_approve: false,
-        });
+        let cli = cli_with(Command::Run { task: vec![], max_turns: 50, auto_approve: false });
         let err = run_blocking(cli, Config::default()).unwrap_err();
         assert!(
             err.to_string().contains("Task description cannot be empty"),
@@ -97,17 +84,13 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         isolate_home(&temp_dir);
 
-        let cli = cli_with(Command::Config {
-            action: ConfigAction::Show,
-        });
+        let cli = cli_with(Command::Config { action: ConfigAction::Show });
         assert!(run_blocking(cli, Config::default()).is_ok());
     }
 
     #[test]
     fn run_config_list_routes_to_config_module() {
-        let cli = cli_with(Command::Config {
-            action: ConfigAction::List,
-        });
+        let cli = cli_with(Command::Config { action: ConfigAction::List });
         assert!(run_blocking(cli, Config::default()).is_ok());
     }
 
@@ -118,17 +101,13 @@ mod tests {
         isolate_home(&temp_dir);
 
         let cli = cli_with(Command::Config {
-            action: ConfigAction::Get {
-                key: "llm.provider".to_string(),
-            },
+            action: ConfigAction::Get { key: "llm.provider".to_string() },
         });
         assert!(run_blocking(cli, Config::default()).is_ok());
 
         // Unknown keys surface as errors through the same route.
         let cli = cli_with(Command::Config {
-            action: ConfigAction::Get {
-                key: "does.not.exist".to_string(),
-            },
+            action: ConfigAction::Get { key: "does.not.exist".to_string() },
         });
         let err = run_blocking(cli, Config::default()).unwrap_err();
         assert!(err.to_string().contains("Unknown config key"), "unexpected error: {err}");

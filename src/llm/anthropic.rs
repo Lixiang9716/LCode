@@ -1,11 +1,11 @@
 //! Anthropic (Claude) LLM provider implementation.
 
-use async_trait::async_trait;
 use crate::config::LlmConfig;
 use crate::llm::{
-    ChatMessage, FinishReason, FunctionCall, LlmResponse, LlmProvider, ToolCallRequest,
+    ChatMessage, FinishReason, FunctionCall, LlmProvider, LlmResponse, ToolCallRequest,
     ToolDefinition, Usage,
 };
+use async_trait::async_trait;
 
 /// Anthropic Claude provider.
 pub struct AnthropicProvider {
@@ -73,7 +73,7 @@ impl LlmProvider for AnthropicProvider {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
-            "messages": chat_messages.iter().map(|m| anthropic_message_to_json(m)).collect::<Vec<_>>(),
+            "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
         });
 
         if !system_prompt.is_empty() {
@@ -129,10 +129,8 @@ fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<&ChatMessage>
 
     let system_prompt = system_parts.join("\n\n");
 
-    let chat_messages: Vec<&ChatMessage> = messages
-        .iter()
-        .filter(|m| !matches!(m.role, crate::llm::Role::System))
-        .collect();
+    let chat_messages: Vec<&ChatMessage> =
+        messages.iter().filter(|m| !matches!(m.role, crate::llm::Role::System)).collect();
 
     (system_prompt, chat_messages)
 }
@@ -235,11 +233,7 @@ fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmRespo
 
     Ok(LlmResponse {
         content: text_content,
-        tool_calls: if tool_calls.is_empty() {
-            None
-        } else {
-            Some(tool_calls)
-        },
+        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
         usage,
         finish_reason,
     })

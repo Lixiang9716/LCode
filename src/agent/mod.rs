@@ -39,7 +39,7 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(Box::from(provider), registry, auto_approve);
+    let mut executor = Executor::new(provider, registry, auto_approve);
 
     // Start the task
     tracing::info!("Starting task: {}", task);

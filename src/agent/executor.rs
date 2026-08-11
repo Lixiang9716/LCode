@@ -23,16 +23,8 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor.
-    pub fn new(
-        provider: Box<dyn LlmProvider>,
-        registry: ToolRegistry,
-        auto_approve: bool,
-    ) -> Self {
-        Self {
-            provider,
-            registry,
-            auto_approve,
-        }
+    pub fn new(provider: Box<dyn LlmProvider>, registry: ToolRegistry, auto_approve: bool) -> Self {
+        Self { provider, registry, auto_approve }
     }
 
     /// Run the agent loop for a given task.
@@ -181,11 +173,7 @@ fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
-    let boundary = s[..max_len]
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(max_len);
+    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
     &s[..boundary]
 }
 
@@ -213,10 +201,7 @@ mod tests {
         ToolCallRequest {
             id: id.to_string(),
             call_type: "function".to_string(),
-            function: FunctionCall {
-                name: "write_file".to_string(),
-                arguments: args.to_string(),
-            },
+            function: FunctionCall { name: "write_file".to_string(), arguments: args.to_string() },
         }
     }
 
@@ -281,10 +266,8 @@ mod tests {
 
         let memory = ConversationMemory::new("You are a helpful assistant.".to_string());
         let planner = Planner::new(50);
-        let memory = executor
-            .run("Write a test", &planner, memory, 10)
-            .await
-            .expect("run should succeed");
+        let memory =
+            executor.run("Write a test", &planner, memory, 10).await.expect("run should succeed");
 
         // Exactly one LLM call, receiving system + user context.
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -299,10 +282,9 @@ mod tests {
         // The final assistant message must have been added to memory.
         let msgs = memory.messages();
         assert!(msgs.iter().any(|m| matches!(m.role, Role::Assistant)));
-        assert!(
-            msgs.iter()
-                .any(|m| matches!(m.role, Role::Assistant) && m.content == "Final answer.")
-        );
+        assert!(msgs
+            .iter()
+            .any(|m| matches!(m.role, Role::Assistant) && m.content == "Final answer."));
     }
 
     #[tokio::test]
@@ -353,18 +335,14 @@ mod tests {
         assert_eq!(sent_calls[0].function.name, "write_file");
         assert!(matches!(recorded[1][3].role, Role::Tool));
         assert!(recorded[1][3].content.contains("Wrote"));
-        assert!(recorded[1][3]
-            .tool_call_id
-            .as_deref()
-            .is_some_and(|id| id == "call_1"));
+        assert!(recorded[1][3].tool_call_id.as_deref().is_some_and(|id| id == "call_1"));
         drop(recorded);
 
         // Final memory: assistant stop message present, tool result present.
         let msgs = memory.messages();
-        assert!(
-            msgs.iter()
-                .any(|m| matches!(m.role, Role::Assistant) && m.content == "File written.")
-        );
+        assert!(msgs
+            .iter()
+            .any(|m| matches!(m.role, Role::Assistant) && m.content == "File written."));
         assert!(msgs.iter().any(|m| matches!(m.role, Role::Tool)));
     }
 

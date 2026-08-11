@@ -211,20 +211,15 @@ async fn openai_chat_completion_parses_tool_calls() {
 
     assert_eq!(response.finish_reason, FinishReason::ToolCalls);
 
-    let tool_calls: &[ToolCallRequest] = response
-        .tool_calls
-        .as_deref()
-        .expect("expected tool calls in the response");
+    let tool_calls: &[ToolCallRequest] =
+        response.tool_calls.as_deref().expect("expected tool calls in the response");
     assert_eq!(tool_calls.len(), 2);
 
     let first = &tool_calls[0];
     assert_eq!(first.id, "call_abc123");
     assert_eq!(first.call_type, "function");
     assert_eq!(first.function.name, "read_file");
-    assert_eq!(
-        first.function.arguments,
-        "{\"path\": \"src/main.rs\", \"limit\": 10}"
-    );
+    assert_eq!(first.function.arguments, "{\"path\": \"src/main.rs\", \"limit\": 10}");
 
     let second = &tool_calls[1];
     assert_eq!(second.function.name, "grep");
@@ -335,10 +330,7 @@ api_base = "http://localhost:1234/v1"
 
     assert_eq!(cfg.llm.provider, "openai_compatible");
     assert_eq!(cfg.llm.model, "local-model");
-    assert_eq!(
-        cfg.llm.api_base.as_deref(),
-        Some("http://localhost:1234/v1")
-    );
+    assert_eq!(cfg.llm.api_base.as_deref(), Some("http://localhost:1234/v1"));
 }
 
 /// The project-local `.lcode.toml` wins over the user-global `config.toml`.
@@ -386,15 +378,7 @@ fn tool_registry_registers_all_builtin_tools() {
     let registry = ToolRegistry::new(&Config::default()).expect("registry");
     let names = registry.list_tools();
 
-    for expected in [
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_dir",
-        "grep",
-        "glob",
-        "shell",
-    ] {
+    for expected in ["read_file", "write_file", "edit_file", "list_dir", "grep", "glob", "shell"] {
         assert!(
             names.contains(&expected),
             "expected tool '{expected}' to be registered, got: {names:?}"
@@ -455,9 +439,8 @@ fn file_tools_end_to_end_write_read_edit_grep() {
     assert!(!result.output.contains("hello world"));
 
     // grep finds the edited content in the workspace
-    let result = registry
-        .execute("grep", &serde_json::json!({"pattern": "rust"}))
-        .expect("grep should run");
+    let result =
+        registry.execute("grep", &serde_json::json!({"pattern": "rust"})).expect("grep should run");
     assert!(result.success, "grep failed: {}", result.output);
     assert!(
         result.output.contains("notes.txt"),
