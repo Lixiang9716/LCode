@@ -52,7 +52,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 # Token counting (approximate)
-tiktoken-rs = "0.6"
+tiktoken-rs = "0.12"
 
 # File system walker for search tools
 walkdir = "2"
