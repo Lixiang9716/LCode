@@ -62,7 +62,7 @@ pub use compaction::{
 };
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
-pub use memory::ConversationMemory;
+pub use memory::{exact_tokens, ConversationMemory};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
@@ -142,22 +142,49 @@ pub async fn run_task(
     Ok(())
 }
 
+/// Kind of LLM backend a provider alias resolves to.
+enum ProviderKind {
+    Anthropic,
+    OpenAi,
+}
+
 /// Build the appropriate LLM provider from configuration.
+///
+/// Provider aliases (all map to the existing Anthropic/OpenAI-compatible
+/// implementations, only the default endpoint differs):
+/// - `openai` / `openai_compatible` — OpenAI API or any OpenAI-compatible endpoint
+/// - `anthropic` / `claude` — Anthropic native endpoint
+/// - `deepseek`, `kimi` — Anthropic-compatible third-party endpoints
+/// - `minimax`, `glm` — OpenAI-compatible third-party endpoints
+///
+/// An explicit `llm.api_base` always wins over the alias's default
+/// endpoint. The result is wrapped in a [`RetryProvider`] so every LLM
+/// call gets retry/backoff and max_tokens-upgrade semantics (#4).
 pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
-    match config.llm.provider.to_lowercase().as_str() {
-        "openai" | "openai_compatible" => {
-            let provider = crate::llm::openai::OpenAiProvider::new(&config.llm)?;
-            Ok(Box::new(provider))
-        }
-        "anthropic" | "claude" => {
-            let provider = crate::llm::anthropic::AnthropicProvider::new(&config.llm)?;
-            Ok(Box::new(provider))
-        }
+    let provider = config.llm.provider.to_lowercase();
+    let (kind, default_base) = match provider.as_str() {
+        "openai" | "openai_compatible" => (ProviderKind::OpenAi, None),
+        "anthropic" | "claude" => (ProviderKind::Anthropic, None),
+        "deepseek" => (ProviderKind::Anthropic, Some("https://api.deepseek.com/anthropic")),
+        "kimi" => (ProviderKind::Anthropic, Some("https://api.moonshot.cn/anthropic")),
+        "minimax" => (ProviderKind::OpenAi, Some("https://api.minimaxi.com/v1")),
+        "glm" => (ProviderKind::OpenAi, Some("https://open.bigmodel.cn/api/paas/v4")),
         other => anyhow::bail!(
-            "Unknown LLM provider: {}. Supported: openai, anthropic, openai_compatible",
-            other
+            "Unknown LLM provider: {other}. Supported: openai, openai_compatible, \
+             anthropic, claude, deepseek, kimi, minimax, glm"
         ),
-    }
+    };
+
+    // Explicit `llm.api_base` wins; otherwise fall back to the alias's
+    // default endpoint.
+    let api_base = config.llm.api_base.clone().or_else(|| default_base.map(str::to_string));
+    let llm = crate::config::LlmConfig { api_base, ..config.llm.clone() };
+
+    let inner: Box<dyn LlmProvider> = match kind {
+        ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
+        ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
+    };
+    Ok(Box::new(RetryProvider::new(inner, RetryPolicy::default())))
 }
 
 /// Resolve the workspace root for session state (skills dir, task board,

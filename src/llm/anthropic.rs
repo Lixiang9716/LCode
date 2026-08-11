@@ -8,13 +8,21 @@ use crate::llm::{
 use async_trait::async_trait;
 
 /// Anthropic Claude provider.
+///
+/// Supports Anthropic-compatible third-party endpoints (DeepSeek, Kimi,
+/// MiniMax, GLM, ...) via `LlmConfig::api_base`; when unset, the official
+/// `https://api.anthropic.com/v1` endpoint is used.
 pub struct AnthropicProvider {
     api_key: String,
     model: String,
+    api_base: String,
     max_tokens: u32,
     temperature: f32,
     client: reqwest::Client,
 }
+
+/// Default Anthropic API base URL.
+const DEFAULT_API_BASE: &str = "https://api.anthropic.com/v1";
 
 impl AnthropicProvider {
     /// Create a new Anthropic provider from configuration.
@@ -33,13 +41,21 @@ impl AnthropicProvider {
     }
 
     fn new_with_key(api_key: String, config: &LlmConfig) -> anyhow::Result<Self> {
+        let api_base = config.api_base.clone().unwrap_or_else(|| DEFAULT_API_BASE.to_string());
         Ok(Self {
             api_key,
             model: config.model.clone(),
+            api_base,
             max_tokens: config.max_tokens,
             temperature: config.temperature,
             client: reqwest::Client::new(),
         })
+    }
+
+    /// API base URL used for requests (defaults to
+    /// `https://api.anthropic.com/v1`).
+    pub fn api_base(&self) -> &str {
+        &self.api_base
     }
 }
 
@@ -50,7 +66,10 @@ impl LlmProvider for AnthropicProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        let url = "https://api.anthropic.com/v1/messages";
+        // `api_base` may be an Anthropic-compatible third-party endpoint
+        // (e.g. `https://api.deepseek.com/anthropic`); the messages route
+        // is appended the same way for all of them.
+        let url = format!("{}/messages", self.api_base.trim_end_matches('/'));
 
         // Build system prompt from messages
         let (system_prompt, chat_messages) = split_system_messages(messages);
