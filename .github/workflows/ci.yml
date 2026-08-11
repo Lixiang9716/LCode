@@ -9,20 +9,30 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Cancel in-progress runs for the same branch/PR to avoid wasted builds
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Full checks on stable: build + test + clippy + fmt + doc
   build:
-    name: Build
+    name: Build (stable)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust: [stable, 1.94.0]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Key is derived from Cargo.lock + toolchain; only rebuild
+          # when either changes
+          shared-key: stable-full
+          # Save cache even if the job fails, so retries are fast
+          cache-on-failure: true
+          workspaces: . -> target
       - name: Build
         run: cargo build --all-features
       - name: Run tests
@@ -34,12 +44,18 @@ jobs:
       - name: Doc build
         run: cargo doc --no-deps --all-features
 
+  # MSRV compatibility: compile-only check on the minimum supported version
   msrv:
     name: MSRV (1.94)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.94.0
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv-1.94
+          cache-on-failure: true
+          workspaces: . -> target
       - name: Build
         run: cargo build --all-features
