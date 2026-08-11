@@ -24,9 +24,7 @@ impl AnthropicProvider {
             let env_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
             if env_key.is_empty() {
                 anyhow::bail!(
-                    "Anthropic API key is required. Set it via:\n  \
-                     lcode config set llm.api_key <key>\n  \
-                     or set ANTHROPIC_API_KEY environment variable"
+                    "Anthropic API key is required. Set it via `lcode config set llm.api_key <key>` or set the ANTHROPIC_API_KEY environment variable"
                 );
             }
             return Self::new_with_key(env_key, config);
@@ -190,6 +188,13 @@ pub fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
     json
 }
 
+/// Append a `text` content block's contents to the accumulated text.
+fn parse_text_block(block: &serde_json::Value, text_content: &mut String) {
+    if let Some(text) = block["text"].as_str() {
+        text_content.push_str(text);
+    }
+}
+
 /// Extract a `tool_use` content block into a [`ToolCallRequest`].
 #[doc(hidden)]
 pub fn parse_tool_use(
@@ -217,11 +222,7 @@ pub fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmR
     if let Some(blocks) = content_blocks {
         for block in blocks {
             match block["type"].as_str() {
-                Some("text") => {
-                    if let Some(text) = block["text"].as_str() {
-                        text_content.push_str(text);
-                    }
-                }
+                Some("text") => parse_text_block(block, &mut text_content),
                 Some("tool_use") => parse_tool_use(block, &mut tool_calls)?,
                 _ => {}
             }

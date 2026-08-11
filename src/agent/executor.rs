@@ -94,9 +94,7 @@ impl Executor {
             FinishReason::ToolCalls => {
                 if let Some(ref tool_calls) = response.tool_calls {
                     // Print the assistant's text content if any
-                    if !response.content.is_empty() {
-                        println!("\n{}", response.content);
-                    }
+                    print_assistant_text(&response.content);
 
                     // Add the assistant message with tool calls to memory
                     memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
@@ -190,6 +188,13 @@ impl Executor {
         }
 
         Ok(())
+    }
+}
+
+/// Print assistant text content, if any, followed by a blank line.
+fn print_assistant_text(content: &str) {
+    if !content.is_empty() {
+        println!("\n{}", content);
     }
 }
 

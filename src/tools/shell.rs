@@ -51,8 +51,7 @@ impl ShellTool {
         for denied in &self.denied_commands {
             if lower.contains(&denied.to_lowercase()) {
                 anyhow::bail!(
-                    "Command blocked: matches denied pattern '{}'. \
-                     Add it to tools.allowed_commands in config to override.",
+                    "Command blocked: matches denied pattern '{}'. Add it to tools.allowed_commands in config to override.",
                     denied
                 );
             }
@@ -69,8 +68,7 @@ impl ShellTool {
         for d in &dangerous {
             if lower.contains(d) {
                 anyhow::bail!(
-                    "Command blocked: appears to be destructive. \
-                     If this is intentional, please run it manually."
+                    "Command blocked: appears to be destructive. If this is intentional, please run it manually."
                 );
             }
         }
