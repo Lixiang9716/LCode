@@ -139,3 +139,77 @@ mod tests {
         assert!(mem.approximate_tokens() > 0);
     }
 }
+
+    #[test]
+    fn test_add_assistant_with_tool_calls() {
+        use crate::llm::{FunctionCall, Role, ToolCallRequest};
+
+        let mut mem = ConversationMemory::new("sys".into());
+        let tc = ToolCallRequest {
+            id: "call_1".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "write_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            },
+        };
+        mem.add_assistant_with_tool_calls("Writing...", vec![tc]);
+
+        let last = mem.messages().last().unwrap();
+        assert_eq!(last.role, Role::Assistant);
+        assert_eq!(last.content, "Writing...");
+        assert!(last.tool_call_id.is_none());
+        let calls = last.tool_calls.as_ref().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "write_file");
+
+        // The message must be part of the context sent to the LLM.
+        let ctx = mem.get_context();
+        assert_eq!(ctx.len(), 2);
+        assert_eq!(ctx[1].tool_calls.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_compact_if_needed_trims_oldest_messages() {
+        let mut mem = ConversationMemory::new("system prompt".into());
+        for i in 0..20 {
+            mem.add_user(format!("user message number {}", i));
+        }
+        assert_eq!(mem.messages().len(), 20);
+
+        // Force compaction regardless of the token budget.
+        mem.compact_if_needed(0);
+
+        // 20 messages -> trimmed down to half (10), oldest removed first.
+        assert_eq!(mem.messages().len(), 10);
+        assert!(
+            mem.messages()[0].content.contains("10"),
+            "oldest remaining message is the 11th user message"
+        );
+        assert!(mem.messages()[9].content.contains("19"));
+        assert!(
+            mem.messages()
+                .iter()
+                .all(|m| m.role == crate::llm::Role::User)
+        );
+    }
+
+    #[test]
+    fn test_compact_if_needed_noop_within_budget() {
+        let mut mem = ConversationMemory::new("sys".into());
+        mem.add_user("hi");
+        mem.compact_if_needed(10_000);
+        assert_eq!(mem.messages().len(), 1);
+    }
+
+    #[test]
+    fn test_compact_if_needed_keeps_small_conversations() {
+        let mut mem = ConversationMemory::new("sys".into());
+        for i in 0..4 {
+            mem.add_user(format!("m{}", i));
+        }
+        // The compaction loop requires len > 4, so small conversations survive.
+        mem.compact_if_needed(0);
+        assert_eq!(mem.messages().len(), 4);
+    }
