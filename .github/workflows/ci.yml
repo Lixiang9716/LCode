@@ -11,6 +11,9 @@ env:
   # sccache: distributed compilation cache shared across matrix jobs
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
+  # Fall back to local compilation if the cache backend is unavailable
+  # (e.g. GitHub cache service outage) instead of failing the build
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 # Cancel in-progress runs for the same branch/PR to avoid wasted builds
 concurrency:
