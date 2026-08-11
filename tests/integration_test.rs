@@ -117,6 +117,42 @@ fn provider_for(server: &MockServer) -> OpenAiProvider {
     OpenAiProvider::new(&config).expect("provider should validate with a non-empty api_key")
 }
 
+/// Mock OpenAI response containing two `tool_calls`.
+fn tool_calls_response() -> serde_json::Value {
+    serde_json::json!({
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+                {
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\": \"src/main.rs\", \"limit\": 10}"
+                    }
+                },
+                {
+                    "id": "call_def456",
+                    "type": "function",
+                    "function": {
+                        "name": "grep",
+                        "arguments": "{\"pattern\": \"pub fn\"}"
+                    }
+                }
+            ]
+        },
+        "finish_reason": "tool_calls"
+    }],
+    "usage": {
+        "prompt_tokens": 20,
+        "completion_tokens": 12,
+        "total_tokens": 32
+    }
+})
+}
+
 // ---------------------------------------------------------------------------
 // 1. LLM API integration tests (wiremock, no real network)
 // ---------------------------------------------------------------------------
@@ -168,38 +204,7 @@ async fn openai_chat_completion_parses_tool_calls() {
 
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {
-                            "id": "call_abc123",
-                            "type": "function",
-                            "function": {
-                                "name": "read_file",
-                                "arguments": "{\"path\": \"src/main.rs\", \"limit\": 10}"
-                            }
-                        },
-                        {
-                            "id": "call_def456",
-                            "type": "function",
-                            "function": {
-                                "name": "grep",
-                                "arguments": "{\"pattern\": \"pub fn\"}"
-                            }
-                        }
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 20,
-                "completion_tokens": 12,
-                "total_tokens": 32
-            }
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(tool_calls_response()))
         .mount(&server)
         .await;
 

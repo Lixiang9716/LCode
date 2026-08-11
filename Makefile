@@ -1,4 +1,4 @@
-.PHONY: build dev test test-fast test-watch lint fmt fmt-check audit cov clean install
+.PHONY: build dev test test-fast test-watch lint fmt fmt-check style audit cov clean install
 
 build:          ## Build release binary
 	cargo build --release
@@ -39,3 +39,6 @@ clean:          ## Clean build artifacts
 
 install:        ## Install to cargo bin
 	cargo install --path .
+
+style:          ## Check style limits (file lines / indentation)
+	./scripts/check-style.sh

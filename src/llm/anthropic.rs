@@ -188,6 +188,22 @@ fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
     json
 }
 
+/// Extract a `tool_use` content block into a [`ToolCallRequest`].
+fn parse_tool_use(
+    block: &serde_json::Value,
+    tool_calls: &mut Vec<ToolCallRequest>,
+) -> anyhow::Result<()> {
+    tool_calls.push(ToolCallRequest {
+        id: block["id"].as_str().unwrap_or("").to_string(),
+        call_type: "function".to_string(),
+        function: FunctionCall {
+            name: block["name"].as_str().unwrap_or("").to_string(),
+            arguments: serde_json::to_string(&block["input"])?,
+        },
+    });
+    Ok(())
+}
+
 /// Parse Anthropic response into an LlmResponse.
 fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
     let content_blocks = data["content"].as_array();
@@ -202,16 +218,7 @@ fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmRespo
                         text_content.push_str(text);
                     }
                 }
-                Some("tool_use") => {
-                    tool_calls.push(ToolCallRequest {
-                        id: block["id"].as_str().unwrap_or("").to_string(),
-                        call_type: "function".to_string(),
-                        function: FunctionCall {
-                            name: block["name"].as_str().unwrap_or("").to_string(),
-                            arguments: serde_json::to_string(&block["input"])?,
-                        },
-                    });
-                }
+                Some("tool_use") => parse_tool_use(block, &mut tool_calls)?,
                 _ => {}
             }
         }

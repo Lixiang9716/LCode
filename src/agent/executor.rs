@@ -65,41 +65,9 @@ impl Executor {
             // Send to LLM
             let response = self.provider.chat(&context, &tool_defs).await?;
 
-            // Handle the response
-            match response.finish_reason {
-                FinishReason::ToolCalls => {
-                    if let Some(ref tool_calls) = response.tool_calls {
-                        // Print the assistant's text content if any
-                        if !response.content.is_empty() {
-                            println!("\n{}", response.content);
-                        }
-
-                        // Add the assistant message with tool calls to memory
-                        memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
-
-                        // Execute each tool call
-                        for tc in tool_calls {
-                            self.handle_tool_call(tc, &mut memory).await?;
-                        }
-                    }
-                }
-                FinishReason::Stop | FinishReason::Length => {
-                    // Final response — no more tool calls
-                    println!("\n{}", response.content);
-                    memory.add_assistant(response.content);
-                    break;
-                }
-                FinishReason::ContentFilter => {
-                    println!("\n⚠️  Response blocked by content filter.");
-                    break;
-                }
-                FinishReason::Unknown => {
-                    // Assume stop — just output the content
-                    if !response.content.is_empty() {
-                        println!("\n{}", response.content);
-                    }
-                    break;
-                }
+            // Handle the response; stop when the model signals completion
+            if self.handle_response(response, &mut memory).await? {
+                break;
             }
         }
 
@@ -111,6 +79,63 @@ impl Executor {
         );
 
         Ok(memory)
+    }
+
+    /// Handle a single LLM response.
+    ///
+    /// Executes any requested tool calls (recording results in memory) or
+    /// prints the final answer. Returns `true` when the loop should stop.
+    async fn handle_response(
+        &self,
+        response: crate::llm::LlmResponse,
+        memory: &mut ConversationMemory,
+    ) -> anyhow::Result<bool> {
+        match response.finish_reason {
+            FinishReason::ToolCalls => {
+                if let Some(ref tool_calls) = response.tool_calls {
+                    // Print the assistant's text content if any
+                    if !response.content.is_empty() {
+                        println!("\n{}", response.content);
+                    }
+
+                    // Add the assistant message with tool calls to memory
+                    memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
+
+                    // Execute each tool call
+                    self.execute_tool_calls(tool_calls, memory).await?;
+                }
+                Ok(false)
+            }
+            FinishReason::Stop | FinishReason::Length => {
+                // Final response — no more tool calls
+                println!("\n{}", response.content);
+                memory.add_assistant(response.content);
+                Ok(true)
+            }
+            FinishReason::ContentFilter => {
+                println!("\n⚠️  Response blocked by content filter.");
+                Ok(true)
+            }
+            FinishReason::Unknown => {
+                // Assume stop — just output the content
+                if !response.content.is_empty() {
+                    println!("\n{}", response.content);
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// Execute a sequence of tool calls, recording each result in memory.
+    async fn execute_tool_calls(
+        &self,
+        tool_calls: &[crate::llm::ToolCallRequest],
+        memory: &mut ConversationMemory,
+    ) -> anyhow::Result<()> {
+        for tc in tool_calls {
+            self.handle_tool_call(tc, memory).await?;
+        }
+        Ok(())
     }
 
     /// Handle a single tool call: ask for approval, execute, and record result.

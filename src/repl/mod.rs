@@ -29,8 +29,7 @@ pub async fn start(initial_prompt: Option<String>, config: Config) -> anyhow::Re
     }
 
     loop {
-        let prompt = "lcode> ";
-        let readline = editor.readline(prompt);
+        let readline = editor.readline("lcode> ");
 
         match readline {
             Ok(line) => {
@@ -43,18 +42,11 @@ pub async fn start(initial_prompt: Option<String>, config: Config) -> anyhow::Re
                 // Add to history
                 let _ = editor.add_history_entry(trimmed);
 
-                // Handle commands
-                if trimmed.starts_with('/') {
-                    match handle_command(trimmed, &config).await {
-                        Ok(ExitStatus::Quit) => break,
-                        Ok(ExitStatus::Continue) => continue,
-                        Err(e) => eprintln!("Error: {}", e),
-                    }
-                } else {
-                    // Process as a task
-                    if let Err(e) = process_input(trimmed, &config).await {
-                        eprintln!("Error: {}", e);
-                    }
+                // Handle the line (command or task); Quit breaks the loop
+                match handle_line(trimmed, &config).await {
+                    Ok(ExitStatus::Quit) => break,
+                    Ok(ExitStatus::Continue) => continue,
+                    Err(e) => eprintln!("Error: {}", e),
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -74,6 +66,16 @@ pub async fn start(initial_prompt: Option<String>, config: Config) -> anyhow::Re
 
     let _ = editor.save_history(".lcode_history");
     Ok(())
+}
+
+/// Process a single REPL line: slash command or task description.
+async fn handle_line(line: &str, config: &Config) -> anyhow::Result<ExitStatus> {
+    if line.starts_with('/') {
+        handle_command(line, config).await
+    } else {
+        process_input(line, config).await?;
+        Ok(ExitStatus::Continue)
+    }
 }
 
 /// Exit status from command handlers.
