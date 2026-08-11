@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.0 (2026-08-11)
+
+
+### Bug Fixes
+
+* raise MSRV to 1.94 for edition 2024 dependencies ([b41b348](https://github.com/Lixiang9716/LCode/commit/b41b348e1b63b84367ff315685421764dc049b33))
+* resolve clippy warnings and formatting issues ([313d2a3](https://github.com/Lixiang9716/LCode/commit/313d2a3ca6c915e69012d103d0b2cc755b2f53e1))
+
 ## [Unreleased]
 
 ### Changed
