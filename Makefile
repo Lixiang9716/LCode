@@ -1,4 +1,4 @@
-.PHONY: build dev test test-watch lint fmt fmt-check audit cov clean install
+.PHONY: build dev test test-fast test-watch lint fmt fmt-check audit cov clean install
 
 build:          ## Build release binary
 	cargo build --release
@@ -6,8 +6,15 @@ build:          ## Build release binary
 dev:            ## Run in development mode
 	cargo run
 
-test:           ## Run all tests
-	cargo test --all-features
+test:           ## Run all tests (parallel runner if installed)
+	@if command -v cargo-nextest >/dev/null 2>&1; then \
+		cargo nextest run; \
+	else \
+		cargo test --all-features; \
+	fi
+
+test-fast:      ## Run tests with nextest (fast, parallel)
+	cargo nextest run
 
 test-watch:     ## Watch and run tests on change
 	cargo watch -x test

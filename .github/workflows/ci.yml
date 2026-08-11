@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # sccache: distributed compilation cache shared across matrix jobs
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 # Cancel in-progress runs for the same branch/PR to avoid wasted builds
 concurrency:
@@ -24,6 +27,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Setup sccache (shared compilation cache)
+        uses: mozilla-actions/sccache-action@v0.0.4
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
@@ -35,8 +40,14 @@ jobs:
           workspaces: . -> target
       - name: Build
         run: cargo build --all-features
-      - name: Run tests
-        run: cargo test --all-features
+      - name: Install nextest (parallel test runner)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Run tests (parallel)
+        run: cargo nextest run --profile ci
+      - name: Run doc tests
+        run: cargo test --doc
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Format check
@@ -51,6 +62,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.94.0
+      - name: Setup sccache (shared compilation cache)
+        uses: mozilla-actions/sccache-action@v0.0.4
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
