@@ -261,20 +261,30 @@ impl Executor {
         };
         if let HookDecision::Block { reason } = self.hooks.run(&hook_ctx) {
             self.runtime.publish(AgentEvent::ToolCallDeclined { id: tc.id.clone() });
-            memory.add_tool_result(
-                format!("Tool call blocked by hook: {}", reason),
-                tc.id.clone(),
-            );
+            memory.add_tool_result(format!("Tool call blocked by hook: {}", reason), tc.id.clone());
             return Ok(LoopControl::Continue);
         }
 
+        self.execute_tool(tool_name, parsed_args, &tc.id, memory).await
+    }
+
+    /// Await approval (when required), execute the tool, and publish the
+    /// outcome; runs the PostToolUse hook afterwards.
+    async fn execute_tool(
+        &mut self,
+        tool_name: &str,
+        parsed_args: serde_json::Value,
+        tool_call_id: &str,
+        memory: &mut ConversationMemory,
+    ) -> anyhow::Result<LoopControl> {
         // Request approval through the command channel (non-blocking stdin)
         if !self.auto_approve {
-            match self.runtime.await_approval(&tc.id).await {
+            match self.runtime.await_approval(tool_call_id).await {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Rejected => {
-                    self.runtime.publish(AgentEvent::ToolCallDeclined { id: tc.id.clone() });
-                    record_declined(memory, tool_name, &tc.id);
+                    self.runtime
+                        .publish(AgentEvent::ToolCallDeclined { id: tool_call_id.to_string() });
+                    record_declined(memory, tool_name, tool_call_id);
                     return Ok(LoopControl::Continue);
                 }
                 ApprovalDecision::Aborted => return Ok(LoopControl::Abort),
@@ -286,25 +296,25 @@ impl Executor {
             Ok(result) => {
                 let result_str = format!("{}", result);
                 self.runtime.publish(AgentEvent::ToolCallExecuted {
-                    id: tc.id.clone(),
+                    id: tool_call_id.to_string(),
                     output: result_str.clone(),
                 });
-                memory.add_tool_result(result_str, tc.id.clone());
+                memory.add_tool_result(result_str, tool_call_id.to_string());
             }
             Err(e) => {
                 let error_str = format!("Error executing tool: {}", e);
                 self.runtime.publish(AgentEvent::ToolCallFailed {
-                    id: tc.id.clone(),
+                    id: tool_call_id.to_string(),
                     error: error_str.clone(),
                 });
-                memory.add_tool_result(error_str, tc.id.clone());
+                memory.add_tool_result(error_str, tool_call_id.to_string());
             }
         }
 
         // PostToolUse hook (observability / policy follow-up)
         let post_ctx = HookContext {
             point: HookPoint::PostToolUse,
-            tool_name: Some(tool_name.clone()),
+            tool_name: Some(tool_name.to_string()),
             tool_args: Some(parsed_args),
             prompt: None,
         };

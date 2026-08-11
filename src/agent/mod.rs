@@ -51,21 +51,23 @@ mod worktree;
 pub use background::{
     BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask,
 };
-pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
-pub use hooks::{deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry};
-pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
-pub use retry::{RetryPolicy, RetryProvider};
-pub use session::{snapshot, SessionSnapshot, SessionStore};
 pub use compaction::{
     auto_compact, estimate_tokens, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
     PRESERVE_RESULT_TOOLS,
 };
+pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
+pub use hooks::{
+    deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
+};
+pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
 pub use memory::{exact_tokens, ConversationMemory};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
+pub use retry::{RetryPolicy, RetryProvider};
 pub use runtime::{AgentRuntime, ApprovalDecision};
+pub use session::{snapshot, SessionSnapshot, SessionStore};
 pub use skill::{LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
@@ -130,7 +132,8 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks);
+    let mut executor =
+        Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks);
 
     // Start the task
     tracing::info!("Starting task: {}", task);
