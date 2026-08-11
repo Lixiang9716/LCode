@@ -13,8 +13,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+      # Speed up the instrumented (coverage) build
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+          cache-on-failure: true
+      # Install prebuilt tarpaulin binary instead of compiling from
+      # source (cargo install takes 3-5 minutes; this takes seconds)
+      - name: Install tarpaulin (prebuilt)
+        env:
+          TARPAULIN_VERSION: 0.37.1
+        run: |
+          gh release download "${TARPAULIN_VERSION}" \
+            --repo xd009642/tarpaulin \
+            --pattern 'cargo-tarpaulin-x86_64-unknown-linux-gnu.tar.gz'
+          tar xzf cargo-tarpaulin-x86_64-unknown-linux-gnu.tar.gz -C /usr/local/bin
+          cargo-tarpaulin --version
       - name: Generate coverage
         run: cargo tarpaulin --out xml --output-dir coverage
       - name: Upload coverage to Codecov
