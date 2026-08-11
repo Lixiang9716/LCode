@@ -1,4 +1,4 @@
-.PHONY: build dev test test-fast test-watch lint fmt fmt-check style audit cov clean install
+.PHONY: build dev test test-fast test-watch lint fmt fmt-check style changelog changelog-file audit cov clean install
 
 build:          ## Build release binary
 	cargo build --release
@@ -42,3 +42,9 @@ install:        ## Install to cargo bin
 
 style:          ## Check style limits (file lines / indentation)
 	./scripts/check-style.sh
+
+changelog:      ## Preview changelog draft (git-cliff, unreleased)
+	git-cliff --unreleased
+
+changelog-file: ## Rewrite CHANGELOG.md with git-cliff (overwrites!)
+	git-cliff -o CHANGELOG.md

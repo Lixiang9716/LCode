@@ -157,3 +157,16 @@ or the version bump will be wrong (a `chore:` commit produces no release).
 
 If you have questions or need help, open an issue or reach out to the
 maintainers on the project's GitHub page.
+
+## Changelog Generation
+
+[git-cliff](https://git-cliff.org) generates changelog drafts from
+Conventional Commits (config: `cliff.toml`):
+
+```bash
+make changelog          # preview the unreleased changelog draft
+make changelog-file     # rewrite CHANGELOG.md entirely (use with care)
+```
+
+The published `CHANGELOG.md` is maintained by release-please during
+release PRs; git-cliff drafts are for local review/preview.
