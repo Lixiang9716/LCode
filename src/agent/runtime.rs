@@ -39,6 +39,12 @@ impl AgentRuntime {
         let _ = self.events_tx.send(event);
     }
 
+    /// Clone of the event-bus sender, for components that publish from
+    /// outside the runtime (e.g. the background-task manager).
+    pub fn events_sender(&self) -> broadcast::Sender<AgentEvent> {
+        self.events_tx.clone()
+    }
+
     /// Wait for the controller's decision on a pending tool call.
     ///
     /// Messages for other tool calls are ignored; [`AgentCommand::Abort`]

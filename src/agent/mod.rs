@@ -43,7 +43,7 @@ mod team;
 mod todo;
 mod worktree;
 
-pub use background::{BackgroundManager, BackgroundStatus, BackgroundTask};
+pub use background::{BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask};
 pub use compaction::{AUTO_COMPACT_THRESHOLD, estimate_tokens};
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
@@ -52,6 +52,7 @@ pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use skill::{Skill, SkillRegistry};
+pub use subagent::{run_subagent, TaskTool};
 pub use task::{Task, TaskManager, TaskStatus};
 pub use team::{MessageBus, Teammate, TeammateManager, TeammateState, TeamMessage, VALID_MSG_TYPES};
 pub use todo::{TodoItem, TodoManager, TodoStatus};
@@ -76,22 +77,32 @@ pub async fn run_task(
     // Build the tool registry with built-in tools
     let mut registry = ToolRegistry::new(config)?;
 
+    // Create the runtime with event bus + command channel
+    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+
     // Create session-scoped state and register session tools
     let workspace = std::env::current_dir()?;
     let todo = Arc::new(Mutex::new(TodoManager::default()));
     todo::register(&mut registry, todo.clone());
     skill::register(&mut registry, workspace.join("skills"));
     compaction::register(&mut registry);
-    let background = Arc::new(BackgroundManager::default());
+    let background = Arc::new(
+        BackgroundManager::new(config)?.with_events(runtime.events_sender()),
+    );
     background::register(&mut registry, background.clone());
     task::register(&mut registry, &workspace);
     team::register(&mut registry, &workspace);
     worktree::register(&mut registry, &workspace);
-    // subagent::register needs the provider + registry Arc — wired by the
-    // module implementer in Phase 2; see subagent.rs design notes.
 
-    // Create the runtime with event bus + command channel
-    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+    // Subagent (s04): children run with a fresh registry holding only the
+    // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
+    // state) and their own provider instance.
+    let subagent_registry = Arc::new(ToolRegistry::new(config)?);
+    subagent::register(
+        &mut registry,
+        Arc::from(build_provider(config)?),
+        subagent_registry,
+    );
 
     // Spawn the default renderer (stdout + stdin approval prompts)
     let renderer = render::spawn_renderer(events_rx, commands_tx);
@@ -100,7 +111,7 @@ pub async fn run_task(
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
     let mut executor = Executor::new(
-        Box::from(provider),
+        provider,
         registry,
         auto_approve,
         runtime,
