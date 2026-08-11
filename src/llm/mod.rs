@@ -13,6 +13,15 @@ pub mod provider;
 
 pub use provider::LlmProvider;
 
+/// A single event in a streamed chat response.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamEvent {
+    /// A text token delta.
+    TextDelta(String),
+    /// The stream finished with this reason.
+    Done(FinishReason),
+}
+
 /// Role of a chat message participant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

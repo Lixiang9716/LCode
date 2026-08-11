@@ -1,10 +1,11 @@
 //! Common LLM provider trait.
 //!
 //! All LLM backends implement this trait to provide a uniform interface
-//! for chat completion with tool calling support.
+//! for chat completion with tool calling and streaming support.
 
-use crate::llm::{ChatMessage, LlmResponse, ToolDefinition};
+use crate::llm::{ChatMessage, LlmResponse, StreamEvent, ToolDefinition};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 
 /// Trait that all LLM providers must implement.
 ///
@@ -18,7 +19,6 @@ pub trait LlmProvider: Send + Sync {
     /// # Arguments
     /// - `messages`: The conversation history
     /// - `tools`: Available tool definitions for the model to call
-    /// - `stream`: Whether to stream the response token by token
     ///
     /// # Returns
     /// The model's response, potentially including tool calls.
@@ -27,6 +27,24 @@ pub trait LlmProvider: Send + Sync {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse>;
+
+    /// Stream a chat completion as token deltas.
+    ///
+    /// Providers without native streaming fall back to [`Self::chat`]
+    /// and emit the whole response as a single `TextDelta` + `Done`.
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        let response = self.chat(messages, tools).await?;
+        let mut events = Vec::new();
+        if !response.content.is_empty() {
+            events.push(Ok(StreamEvent::TextDelta(response.content.clone())));
+        }
+        events.push(Ok(StreamEvent::Done(response.finish_reason)));
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
 
     /// Get the provider name (e.g., "openai", "anthropic").
     fn name(&self) -> &str;

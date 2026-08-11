@@ -30,12 +30,17 @@ use std::sync::{Arc, Mutex};
 
 mod background;
 mod compaction;
+mod cron;
 mod event;
 mod executor;
+mod hooks;
+mod mcp;
 mod memory;
 mod planner;
 mod render;
+mod retry;
 mod runtime;
+mod session;
 mod skill;
 mod subagent;
 mod task;
@@ -46,6 +51,11 @@ mod worktree;
 pub use background::{
     BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask,
 };
+pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
+pub use hooks::{deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry};
+pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
+pub use retry::{RetryPolicy, RetryProvider};
+pub use session::{snapshot, SessionSnapshot, SessionStore};
 pub use compaction::{
     auto_compact, estimate_tokens, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
     PRESERVE_RESULT_TOOLS,
@@ -84,6 +94,11 @@ pub async fn run_task(
     // Build the tool registry with built-in tools
     let mut registry = ToolRegistry::new(config)?;
 
+    // Session hooks (s20): permission policies run as PreToolUse hooks
+    let mut hooks_registry = HookRegistry::default();
+    register_default_hooks(&mut hooks_registry);
+    let hooks = Arc::new(hooks_registry);
+
     // Create the runtime with event bus + command channel
     let (runtime, events_rx, commands_tx) = AgentRuntime::new();
 
@@ -100,6 +115,8 @@ pub async fn run_task(
     task::register(&mut registry, &workspace);
     team::register(&mut registry, &workspace);
     worktree::register(&mut registry, &workspace);
+    cron::register(&mut registry, &workspace);
+    mcp::register(&mut registry);
 
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
@@ -113,7 +130,7 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(provider, registry, auto_approve, runtime, todo, background);
+    let mut executor = Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks);
 
     // Start the task
     tracing::info!("Starting task: {}", task);

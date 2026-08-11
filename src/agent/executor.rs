@@ -8,7 +8,10 @@
 
 use crate::agent::event::AgentEvent;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
-use crate::agent::{BackgroundManager, ConversationMemory, Planner, TodoManager};
+use crate::agent::{
+    BackgroundManager, ConversationMemory, HookContext, HookDecision, HookPoint, HookRegistry,
+    Planner, TodoManager,
+};
 use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
 use crate::tools::ToolRegistry;
 use std::sync::{Arc, Mutex};
@@ -39,6 +42,7 @@ pub struct Executor {
     runtime: AgentRuntime,
     todo: Arc<Mutex<TodoManager>>,
     background: Arc<BackgroundManager>,
+    hooks: Arc<HookRegistry>,
 }
 
 impl Executor {
@@ -50,8 +54,9 @@ impl Executor {
         runtime: AgentRuntime,
         todo: Arc<Mutex<TodoManager>>,
         background: Arc<BackgroundManager>,
+        hooks: Arc<HookRegistry>,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime, todo, background }
+        Self { provider, registry, auto_approve, runtime, todo, background, hooks }
     }
 
     /// Run the agent loop for a given task.
@@ -247,6 +252,22 @@ impl Executor {
             requires_approval: !self.auto_approve,
         });
 
+        // PreToolUse hooks: a Block decision cancels the call (s20)
+        let hook_ctx = HookContext {
+            point: HookPoint::PreToolUse,
+            tool_name: Some(tool_name.clone()),
+            tool_args: Some(parsed_args.clone()),
+            prompt: None,
+        };
+        if let HookDecision::Block { reason } = self.hooks.run(&hook_ctx) {
+            self.runtime.publish(AgentEvent::ToolCallDeclined { id: tc.id.clone() });
+            memory.add_tool_result(
+                format!("Tool call blocked by hook: {}", reason),
+                tc.id.clone(),
+            );
+            return Ok(LoopControl::Continue);
+        }
+
         // Request approval through the command channel (non-blocking stdin)
         if !self.auto_approve {
             match self.runtime.await_approval(&tc.id).await {
@@ -279,6 +300,15 @@ impl Executor {
                 memory.add_tool_result(error_str, tc.id.clone());
             }
         }
+
+        // PostToolUse hook (observability / policy follow-up)
+        let post_ctx = HookContext {
+            point: HookPoint::PostToolUse,
+            tool_name: Some(tool_name.clone()),
+            tool_args: Some(parsed_args),
+            prompt: None,
+        };
+        self.hooks.run(&post_ctx);
 
         Ok(LoopControl::Continue)
     }
