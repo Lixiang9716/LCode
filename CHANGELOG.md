@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/Lixiang9716/LCode/compare/v0.1.0...v0.2.0) (2026-08-11)
+
+
+### Features
+
+* **agent:** scaffold session capabilities (learn-claude-code parity) ([201f6c8](https://github.com/Lixiang9716/LCode/commit/201f6c8a428bb9c2167996482baf6c07365054e9))
+
 ## [Unreleased]
 
 ### Added
