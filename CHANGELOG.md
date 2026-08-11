@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/Lixiang9716/LCode/compare/v0.2.0...v0.3.0) (2026-08-11)
+
+
+### Features
+
+* port learn-claude-code capabilities (s03-s12) ([464331d](https://github.com/Lixiang9716/LCode/commit/464331dd031f5823491d9f88123fe546442f69e1))
+
 ## [0.2.0](https://github.com/Lixiang9716/LCode/compare/v0.1.0...v0.2.0) (2026-08-11)
 
 
