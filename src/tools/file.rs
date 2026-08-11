@@ -16,6 +16,13 @@ impl ReadFileTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
         Ok(Self { workspace_root: std::env::current_dir()? })
     }
+
+    /// Create a tool rooted at `root` instead of the current directory.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root(root: PathBuf) -> Self {
+        Self { workspace_root: root }
+    }
 }
 
 impl Tool for ReadFileTool {
@@ -100,6 +107,13 @@ impl WriteFileTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
         Ok(Self { workspace_root: std::env::current_dir()? })
     }
+
+    /// Create a tool rooted at `root` instead of the current directory.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root(root: PathBuf) -> Self {
+        Self { workspace_root: root }
+    }
 }
 
 impl Tool for WriteFileTool {
@@ -159,6 +173,13 @@ impl ListDirTool {
     pub fn new(_config: &Config) -> anyhow::Result<Self> {
         Ok(Self { workspace_root: std::env::current_dir()? })
     }
+
+    /// Create a tool rooted at `root` instead of the current directory.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root(root: PathBuf) -> Self {
+        Self { workspace_root: root }
+    }
 }
 
 impl Tool for ListDirTool {
@@ -216,146 +237,5 @@ impl Tool for ListDirTool {
             entries.len(),
             output
         )))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_read_file() {
-        let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "line 1\nline 2\nline 3\n").unwrap();
-
-        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "test.txt"})).unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("line 1"));
-        assert!(result.output.contains("line 3"));
-    }
-
-    #[test]
-    fn test_write_and_read_file() {
-        let dir = TempDir::new().unwrap();
-
-        let writer = WriteFileTool { workspace_root: dir.path().to_path_buf() };
-        let result = writer
-            .execute(&serde_json::json!({
-                "path": "output.txt",
-                "content": "Hello, world!"
-            }))
-            .unwrap();
-        assert!(result.success);
-
-        let reader = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-        let result = reader.execute(&serde_json::json!({"path": "output.txt"})).unwrap();
-        assert!(result.output.contains("Hello, world!"));
-    }
-
-    #[test]
-    fn test_read_file_offset_beyond_lines() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("test.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n")
-            .unwrap();
-
-        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "test.txt", "offset": 100})).unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("Read 0 lines"));
-    }
-
-    #[test]
-    fn test_read_file_limit_truncates() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("test.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n")
-            .unwrap();
-
-        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool
-            .execute(&serde_json::json!({"path": "test.txt", "offset": 1, "limit": 2}))
-            .unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("line 2"));
-        assert!(result.output.contains("line 3"));
-        assert!(!result.output.contains("line 4"));
-    }
-
-    #[test]
-    fn test_read_file_not_found() {
-        let dir = TempDir::new().unwrap();
-        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "missing.txt"})).unwrap();
-        assert!(!result.success);
-        assert!(result.output.contains("File not found"));
-    }
-
-    #[test]
-    fn test_read_file_is_directory() {
-        let dir = TempDir::new().unwrap();
-        let tool = ReadFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "."})).unwrap();
-        assert!(!result.success);
-        assert!(result.output.contains("Not a file"));
-    }
-
-    #[test]
-    fn test_write_file_creates_nested_dirs() {
-        let dir = TempDir::new().unwrap();
-        let tool = WriteFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool
-            .execute(&serde_json::json!({
-                "path": "a/b/c/deep.txt",
-                "content": "deep content"
-            }))
-            .unwrap();
-        assert!(result.success);
-        assert!(dir.path().join("a/b/c/deep.txt").is_file());
-        let written = std::fs::read_to_string(dir.path().join("a/b/c/deep.txt")).unwrap();
-        assert_eq!(written, "deep content");
-    }
-
-    #[test]
-    fn test_write_file_empty_content() {
-        let dir = TempDir::new().unwrap();
-        let tool = WriteFileTool { workspace_root: dir.path().to_path_buf() };
-
-        let result =
-            tool.execute(&serde_json::json!({"path": "empty.txt", "content": ""})).unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("Wrote 0 bytes (0 lines)"));
-        assert_eq!(std::fs::read_to_string(dir.path().join("empty.txt")).unwrap(), "");
-    }
-
-    #[test]
-    fn test_list_dir_subdir_suffix() {
-        let dir = TempDir::new().unwrap();
-        std::fs::create_dir(dir.path().join("subdir")).unwrap();
-        std::fs::write(dir.path().join("file.txt"), "x").unwrap();
-        let tool = ListDirTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "."})).unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("subdir/"));
-        assert!(result.output.contains("file.txt"));
-        assert!(!result.output.contains("file.txt/"));
-    }
-
-    #[test]
-    fn test_list_dir_not_found() {
-        let dir = TempDir::new().unwrap();
-        let tool = ListDirTool { workspace_root: dir.path().to_path_buf() };
-
-        let result = tool.execute(&serde_json::json!({"path": "no_such_dir"})).unwrap();
-        assert!(!result.success);
-        assert!(result.output.contains("Directory not found"));
     }
 }
