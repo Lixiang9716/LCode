@@ -389,4 +389,211 @@ mod tests {
         assert!(content.contains("hi there"));
         assert!(!content.contains("hello world"));
     }
+
+    #[test]
+    fn test_read_file_offset_beyond_lines() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("test.txt"),
+            "line 1\nline 2\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
+
+        let tool = ReadFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "test.txt", "offset": 100}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("Read 0 lines"));
+    }
+
+    #[test]
+    fn test_read_file_limit_truncates() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("test.txt"),
+            "line 1\nline 2\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
+
+        let tool = ReadFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "test.txt", "offset": 1, "limit": 2}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("line 2"));
+        assert!(result.output.contains("line 3"));
+        assert!(!result.output.contains("line 4"));
+    }
+
+    #[test]
+    fn test_read_file_not_found() {
+        let dir = TempDir::new().unwrap();
+        let tool = ReadFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "missing.txt"}))
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("File not found"));
+    }
+
+    #[test]
+    fn test_read_file_is_directory() {
+        let dir = TempDir::new().unwrap();
+        let tool = ReadFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "."}))
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("Not a file"));
+    }
+
+    #[test]
+    fn test_write_file_creates_nested_dirs() {
+        let dir = TempDir::new().unwrap();
+        let tool = WriteFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({
+                "path": "a/b/c/deep.txt",
+                "content": "deep content"
+            }))
+            .unwrap();
+        assert!(result.success);
+        assert!(dir.path().join("a/b/c/deep.txt").is_file());
+        let written = std::fs::read_to_string(dir.path().join("a/b/c/deep.txt")).unwrap();
+        assert_eq!(written, "deep content");
+    }
+
+    #[test]
+    fn test_write_file_empty_content() {
+        let dir = TempDir::new().unwrap();
+        let tool = WriteFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "empty.txt", "content": ""}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("Wrote 0 bytes (0 lines)"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("empty.txt")).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_edit_file_old_string_not_found() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("edit.txt"), "hello world\n").unwrap();
+        let tool = EditFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({
+                "path": "edit.txt",
+                "old_string": "does not exist anywhere",
+                "new_string": "replacement"
+            }))
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("not found"));
+    }
+
+    #[test]
+    fn test_edit_file_not_unique() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("dup.txt"), "abc\ndef\nabc\n").unwrap();
+        let tool = EditFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({
+                "path": "dup.txt",
+                "old_string": "abc",
+                "new_string": "xyz"
+            }))
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("must be unique"));
+
+        // File must be left unchanged.
+        let content = std::fs::read_to_string(dir.path().join("dup.txt")).unwrap();
+        assert_eq!(content, "abc\ndef\nabc\n");
+    }
+
+    #[test]
+    fn test_edit_file_multiline() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("multi.txt"),
+            "fn foo() {\n    old_body\n}\n",
+        )
+        .unwrap();
+        let tool = EditFileTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({
+                "path": "multi.txt",
+                "old_string": "fn foo() {\n    old_body\n}",
+                "new_string": "fn foo() {\n    new_body\n}"
+            }))
+            .unwrap();
+        assert!(result.success);
+
+        let content = std::fs::read_to_string(dir.path().join("multi.txt")).unwrap();
+        assert!(content.contains("new_body"));
+        assert!(!content.contains("old_body"));
+    }
+
+    #[test]
+    fn test_list_dir_subdir_suffix() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "x").unwrap();
+        let tool = ListDirTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "."}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("subdir/"));
+        assert!(result.output.contains("file.txt"));
+        assert!(!result.output.contains("file.txt/"));
+    }
+
+    #[test]
+    fn test_list_dir_not_found() {
+        let dir = TempDir::new().unwrap();
+        let tool = ListDirTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"path": "no_such_dir"}))
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("Directory not found"));
+    }
 }
