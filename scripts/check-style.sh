@@ -48,6 +48,16 @@ else
     echo "✅ Indentation depth OK"
 fi
 
+echo "== Checking test code separation (src/ must contain no tests) =="
+# Test code belongs in tests/; src/ is for source code only.
+TEST_VIOLATIONS=$(grep -rn "#\[cfg(test)\]" src/ 2>/dev/null || true)
+if [ -n "$TEST_VIOLATIONS" ]; then
+    echo "$TEST_VIOLATIONS"
+    FAIL=1
+else
+    echo "✅ src/ contains no test code"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
     echo "🎉 All style checks passed"
 else
