@@ -11,31 +11,59 @@
 //! 2. [`Executor`] runs the loop, publishing events and awaiting approvals
 //! 3. [`render`] provides the default stdout renderer used by single-shot
 //!    tasks; other subscribers can observe the same stream
+//!
+//! Session capabilities (learn-claude-code parity):
+//! - [`todo`] — model-owned plan + nag reminders (s03)
+//! - [`skill`] — two-layer skill loading (s05)
+//! - [`compaction`] — three-level context compression (s06)
+//! - [`subagent`] — context-isolated subtask delegation (s04)
+//! - [`background`] — non-blocking background commands (s08)
+//! - [`task`] — persistent disk-backed task board (s07)
+//! - [`team`] — multi-agent teams, protocols, autonomy (s09-s11)
+//! - [`worktree`] — git worktree task isolation (s12)
 
 use crate::config::Config;
 use crate::llm::LlmProvider;
 use crate::tools::ToolRegistry;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+mod background;
+mod compaction;
 mod event;
 mod executor;
 mod memory;
 mod planner;
 mod render;
 mod runtime;
+mod skill;
+mod subagent;
+mod task;
+mod team;
+mod todo;
+mod worktree;
 
+pub use background::{BackgroundManager, BackgroundStatus, BackgroundTask};
+pub use compaction::{AUTO_COMPACT_THRESHOLD, estimate_tokens};
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
 pub use memory::ConversationMemory;
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
+pub use skill::{Skill, SkillRegistry};
+pub use task::{Task, TaskManager, TaskStatus};
+pub use team::{MessageBus, Teammate, TeammateManager, TeammateState, TeamMessage, VALID_MSG_TYPES};
+pub use todo::{TodoItem, TodoManager, TodoStatus};
+pub use worktree::{EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
 ///
 /// Creates a fresh agent session bound to a new runtime, spawns the
 /// default stdout renderer (which also answers approval prompts via
-/// stdin), and executes the task turn by turn until completion or
-/// `max_turns` is reached.
+/// stdin), registers the session tool set (todo/skill/task/background/
+/// team/worktree), and executes the task turn by turn until completion
+/// or `max_turns` is reached.
 pub async fn run_task(
     task: &str,
     max_turns: u32,
@@ -45,8 +73,22 @@ pub async fn run_task(
     // Build the LLM provider
     let provider = build_provider(config)?;
 
-    // Build the tool registry
-    let registry = ToolRegistry::new(config)?;
+    // Build the tool registry with built-in tools
+    let mut registry = ToolRegistry::new(config)?;
+
+    // Create session-scoped state and register session tools
+    let workspace = std::env::current_dir()?;
+    let todo = Arc::new(Mutex::new(TodoManager::default()));
+    todo::register(&mut registry, todo.clone());
+    skill::register(&mut registry, workspace.join("skills"));
+    compaction::register(&mut registry);
+    let background = Arc::new(BackgroundManager::default());
+    background::register(&mut registry, background.clone());
+    task::register(&mut registry, &workspace);
+    team::register(&mut registry, &workspace);
+    worktree::register(&mut registry, &workspace);
+    // subagent::register needs the provider + registry Arc — wired by the
+    // module implementer in Phase 2; see subagent.rs design notes.
 
     // Create the runtime with event bus + command channel
     let (runtime, events_rx, commands_tx) = AgentRuntime::new();
@@ -57,7 +99,14 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(provider, registry, auto_approve, runtime);
+    let mut executor = Executor::new(
+        Box::from(provider),
+        registry,
+        auto_approve,
+        runtime,
+        todo,
+        background,
+    );
 
     // Start the task
     tracing::info!("Starting task: {}", task);
@@ -85,4 +134,10 @@ pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
             other
         ),
     }
+}
+
+/// Resolve the workspace root for session state (skills dir, task board,
+/// worktrees). Placeholder until a real workspace resolver exists.
+pub fn workspace_root() -> anyhow::Result<PathBuf> {
+    std::env::current_dir().map_err(Into::into)
 }

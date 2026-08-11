@@ -35,6 +35,56 @@ pub fn render_event(event: &AgentEvent) {
         }
         AgentEvent::TaskAborted { reason } => println!("\n⚠️  {}", reason),
         AgentEvent::Error { message } => println!("\n❌ {}", message),
+
+        // --- Session capabilities (learn-claude-code parity) ---
+        AgentEvent::TodoUpdated { items } => {
+            println!("\n📋 Todos ({}):", items.len());
+            for item in items {
+                let mark = match item.status {
+                    crate::agent::TodoStatus::Pending => "[ ]",
+                    crate::agent::TodoStatus::InProgress => "[>]",
+                    crate::agent::TodoStatus::Completed => "[x]",
+                };
+                println!("   {} #{}: {}", mark, item.id, item.text);
+            }
+        }
+        AgentEvent::TodoNag { turns_since_update } => {
+            println!("\n⏰ Reminder: update your todos ({} turns without update).", turns_since_update);
+        }
+        AgentEvent::SkillLoaded { name } => println!("\n📖 Skill loaded: {}", name),
+        AgentEvent::ContextCompacted { summary, transcript_path } => {
+            println!("\n🗜️  Context compacted: {} (transcript: {})", truncate(summary, 200), transcript_path);
+        }
+        AgentEvent::SubagentSpawned { prompt } => {
+            println!("\n🧵 Subagent spawned: {}", truncate(prompt, 100));
+        }
+        AgentEvent::SubagentCompleted { summary } => {
+            println!("\n🧵 Subagent finished: {}", truncate(summary, 200));
+        }
+        AgentEvent::BackgroundTaskStarted { id, command } => {
+            println!("\n🔄 Background started [{}]: {}", id, truncate(command, 80));
+        }
+        AgentEvent::BackgroundTaskCompleted { id, status, output } => {
+            println!("\n🔄 Background [{}] {}: {}", id, status, truncate(output, 200));
+        }
+        AgentEvent::TaskCreated { id, title } => {
+            println!("\n📌 Task #{} created: {}", id, title);
+        }
+        AgentEvent::TaskUpdated { id, status } => {
+            println!("\n📌 Task #{} → {}", id, status);
+        }
+        AgentEvent::TeamMessageSent { from, to, msg_type } => {
+            println!("\n💬 [{}] {} → {} ({})", from, to, msg_type, "team");
+        }
+        AgentEvent::TeammateStateChanged { name, state } => {
+            println!("\n👥 Teammate {} → {}", name, state);
+        }
+        AgentEvent::WorktreeCreated { name, task_id } => {
+            println!("\n🌿 Worktree created: {} (task #{})", name, task_id);
+        }
+        AgentEvent::WorktreeRemoved { name } => {
+            println!("\n🌿 Worktree removed: {}", name);
+        }
     }
 }
 

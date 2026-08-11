@@ -38,6 +38,51 @@ pub enum AgentEvent {
     TaskAborted { reason: String },
     /// An unrecoverable error occurred.
     Error { message: String },
+
+    // --- Plan / todo tracking (s03) ---
+    /// The model updated the todo list.
+    TodoUpdated { items: Vec<crate::agent::todo::TodoItem> },
+    /// The model has not updated todos for several turns; a reminder was
+    /// injected into the tool result stream.
+    TodoNag { turns_since_update: u32 },
+
+    // --- Skill loading (s05) ---
+    /// A skill was loaded into the context.
+    SkillLoaded { name: String },
+
+    // --- Context compaction (s06) ---
+    /// The conversation was compacted; a transcript was written to disk.
+    ContextCompacted { summary: String, transcript_path: String },
+
+    // --- Subagents (s04) ---
+    /// A subagent was spawned with the given prompt.
+    SubagentSpawned { prompt: String },
+    /// A subagent finished and returned its summary.
+    SubagentCompleted { summary: String },
+
+    // --- Background tasks (s08) ---
+    /// A background command started.
+    BackgroundTaskStarted { id: String, command: String },
+    /// A background command finished.
+    BackgroundTaskCompleted { id: String, status: String, output: String },
+
+    // --- Task board (s07) ---
+    /// A persistent task was created.
+    TaskCreated { id: u32, title: String },
+    /// A persistent task changed status.
+    TaskUpdated { id: u32, status: String },
+
+    // --- Team messaging (s09/s10) ---
+    /// A message was sent between agents.
+    TeamMessageSent { from: String, to: String, msg_type: String },
+    /// A teammate changed lifecycle state.
+    TeammateStateChanged { name: String, state: String },
+
+    // --- Worktree isolation (s12) ---
+    /// A worktree was created for a task.
+    WorktreeCreated { name: String, task_id: u32 },
+    /// A worktree was removed.
+    WorktreeRemoved { name: String },
 }
 
 /// Control messages sent to the agent runtime.
@@ -51,4 +96,6 @@ pub enum AgentCommand {
     RejectToolCall { id: String },
     /// Abort the current session.
     Abort,
+    /// Manually trigger context compaction with an optional focus.
+    Compact { focus: Option<String> },
 }

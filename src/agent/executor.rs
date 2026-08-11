@@ -8,9 +8,10 @@
 
 use crate::agent::event::AgentEvent;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
-use crate::agent::{ConversationMemory, Planner};
+use crate::agent::{BackgroundManager, ConversationMemory, Planner, TodoManager};
 use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
 use crate::tools::ToolRegistry;
+use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
 enum LoopControl {
@@ -22,26 +23,35 @@ enum LoopControl {
     Abort,
 }
 
+/// Number of turns without a todo update before a nag is injected.
+const TODO_NAG_AFTER_TURNS: u32 = 3;
+
 /// The executor drives the agent loop.
 ///
-/// Owns the LLM provider, tool registry and runtime so it can be
-/// constructed with mocks in tests.
+/// Owns the LLM provider, tool registry, runtime, and the session-scoped
+/// state (todo manager for nag reminders, background manager for
+/// turn-start notification draining) so it can be constructed with mocks
+/// in tests.
 pub struct Executor {
     provider: Box<dyn LlmProvider>,
     registry: ToolRegistry,
     auto_approve: bool,
     runtime: AgentRuntime,
+    todo: Arc<Mutex<TodoManager>>,
+    background: Arc<BackgroundManager>,
 }
 
 impl Executor {
-    /// Create a new executor bound to the given runtime.
+    /// Create a new executor bound to the given runtime and session state.
     pub fn new(
         provider: Box<dyn LlmProvider>,
         registry: ToolRegistry,
         auto_approve: bool,
         runtime: AgentRuntime,
+        todo: Arc<Mutex<TodoManager>>,
+        background: Arc<BackgroundManager>,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime }
+        Self { provider, registry, auto_approve, runtime, todo, background }
     }
 
     /// Run the agent loop for a given task.
@@ -81,6 +91,11 @@ impl Executor {
             self.runtime.publish(AgentEvent::TurnStarted { turn });
             tracing::debug!(turn, "Agent turn");
 
+            // Turn-start injection: drain background-task notifications
+            // into the conversation (s08: results arrive before the next
+            // LLM call, no polling needed).
+            self.inject_background_results(&mut memory);
+
             // Get the current conversation context
             let context = memory.get_context();
 
@@ -98,6 +113,11 @@ impl Executor {
             };
 
             self.runtime.publish(AgentEvent::TurnFinished { turn });
+
+            // Turn-end nag: remind the model to update its plan when it
+            // has not touched the todo list for several turns (s03).
+            self.maybe_nag_todo(&mut memory);
+
             if finished {
                 break;
             }
@@ -113,6 +133,32 @@ impl Executor {
         }
 
         Ok(memory)
+    }
+
+    /// Drain completed background-task notifications into the conversation
+    /// before the LLM call (s08 turn-start injection).
+    fn inject_background_results(&self, memory: &mut ConversationMemory) {
+        let notifications = self.background.drain_notifications();
+        if notifications.is_empty() {
+            return;
+        }
+        let body = notifications.join("\n");
+        memory.add_user(format!("<background-results>\n{}\n</background-results>", body));
+        tracing::debug!(count = notifications.len(), "injected background results");
+    }
+
+    /// Publish a nag event when the model has not updated its todos for
+    /// several turns; the renderer surfaces it to the user (s03).
+    fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {
+        let manager = self.todo.lock().unwrap();
+        if manager.is_empty() {
+            return;
+        }
+        let turns = manager.turns_since_update();
+        if turns >= TODO_NAG_AFTER_TURNS {
+            self.runtime.publish(AgentEvent::TodoNag { turns_since_update: turns });
+            memory.add_user("<reminder>Update your todos.</reminder>");
+        }
     }
 
     /// Handle a single LLM response.
