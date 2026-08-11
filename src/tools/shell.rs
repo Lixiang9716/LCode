@@ -87,6 +87,17 @@ impl ShellTool {
     }
 }
 
+impl std::fmt::Debug for ShellTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellTool")
+            .field("workspace_root", &self.workspace_root)
+            .field("allowed_commands", &self.allowed_commands)
+            .field("denied_commands", &self.denied_commands)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
+    }
+}
+
 impl Tool for ShellTool {
     fn name(&self) -> &str {
         "shell"

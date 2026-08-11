@@ -7,6 +7,7 @@
 
 use crate::tools::{Tool, ToolResult};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// A discovered skill (a directory containing SKILL.md).
 #[derive(Debug, Clone)]
@@ -14,6 +15,53 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub path: PathBuf,
+}
+
+impl Skill {
+    /// Parse a `SKILL.md` file: YAML frontmatter (`name`/`description`)
+    /// plus the body. Falls back to the parent directory name when the
+    /// frontmatter is missing or malformed.
+    fn from_file(path: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let (meta, _body) = parse_frontmatter(&text);
+        let fallback = path.parent()?.file_name()?.to_string_lossy().into_owned();
+        let name = meta
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or(fallback);
+        let description = meta
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        Some(Self { name, description, path: path.to_path_buf() })
+    }
+}
+
+/// Split `---`-delimited YAML frontmatter from the body.
+///
+/// Returns the metadata map and the body; when the document has no
+/// (parseable) frontmatter both degenerate to `Null` / the full text.
+fn parse_frontmatter(text: &str) -> (serde_yaml::Value, &str) {
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return (serde_yaml::Value::Null, text);
+    };
+    let Some(end) = rest.find("\n---\n") else {
+        return (serde_yaml::Value::Null, text);
+    };
+    let yaml = &rest[..end];
+    let body = &rest[end + "\n---\n".len()..];
+    let meta = serde_yaml::from_str(yaml).unwrap_or(serde_yaml::Value::Null);
+    (meta, body)
+}
+
+/// Collapse whitespace (multi-line YAML descriptions) into one line.
+fn flatten(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Discovers skills by scanning a directory for SKILL.md files and
@@ -25,24 +73,56 @@ pub struct SkillRegistry {
 
 impl SkillRegistry {
     /// Scan `skills_dir` recursively for `SKILL.md` files.
+    ///
+    /// Unreadable or malformed skill files are skipped; a missing
+    /// directory leaves the registry empty (no error).
     pub fn load_from(&mut self, skills_dir: &Path) -> anyhow::Result<()> {
-        // TODO(s05): rglob SKILL.md, parse `---` frontmatter with
-        // serde_yaml, fall back to directory name as skill name.
-        let _ = skills_dir;
+        if !skills_dir.is_dir() {
+            return Ok(());
+        }
+        let mut skills = Vec::new();
+        for entry in walkdir::WalkDir::new(skills_dir) {
+            let entry = entry?;
+            if entry.file_type().is_file() && entry.file_name() == "SKILL.md" {
+                if let Some(skill) = Skill::from_file(entry.path()) {
+                    skills.push(skill);
+                }
+            }
+        }
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        self.skills = skills;
         Ok(())
     }
 
     /// Layer 1: one-line descriptions for the system prompt.
     pub fn descriptions(&self) -> String {
-        // TODO(s05): "- name: description" lines.
-        self.skills.iter().map(|s| format!("- {}: {}", s.name, s.description)).collect::<Vec<_>>().join("\n")
+        if self.skills.is_empty() {
+            return "(no skills available)".to_string();
+        }
+        self.skills
+            .iter()
+            .map(|s| format!("- {}: {}", s.name, flatten(&s.description)))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Layer 2: full SKILL.md body wrapped in `<skill>` tags.
+    ///
+    /// Unknown skills produce an error listing the available ones.
     pub fn content(&self, name: &str) -> String {
-        // TODO(s05): return `<skill name="...">body</skill>`; unknown
-        // skills list the available ones in the error.
-        format!("<skill name=\"{}\">(not loaded)</skill>", name)
+        match self.skills.iter().find(|s| s.name == name) {
+            Some(skill) => {
+                let text = std::fs::read_to_string(&skill.path).unwrap_or_default();
+                let (_meta, body) = parse_frontmatter(&text);
+                format!("<skill name=\"{}\">\n{}\n</skill>", name, body.trim())
+            }
+            None => {
+                let available: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
+                let list =
+                    if available.is_empty() { "(none)".to_string() } else { available.join(", ") };
+                format!("Error: Unknown skill '{}'. Available: {}", name, list)
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -52,7 +132,7 @@ impl SkillRegistry {
 
 /// Tool: `load_skill` — pulls the full skill body into the context.
 pub struct LoadSkillTool {
-    pub registry: std::sync::Arc<std::sync::Mutex<SkillRegistry>>,
+    pub registry: Arc<Mutex<SkillRegistry>>,
 }
 
 impl Tool for LoadSkillTool {
@@ -66,13 +146,26 @@ impl Tool for LoadSkillTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO(s05): { name: string }
-        serde_json::json!({ "type": "object", "properties": {}, "required": [] })
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "Skill name to load" }
+            },
+            "required": ["name"]
+        })
     }
 
-    fn execute(&self, _args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        // TODO(s05): get name, return registry.content(name).
-        Ok(ToolResult::err("load_skill not implemented yet"))
+    fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        let name =
+            args.get("name").and_then(|v| v.as_str()).map(str::trim).filter(|n| !n.is_empty());
+        let Some(name) = name else {
+            return Ok(ToolResult::err("load_skill requires a 'name' argument"));
+        };
+        let registry = self.registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if registry.is_empty() {
+            return Ok(ToolResult::ok("no skills loaded"));
+        }
+        Ok(ToolResult::ok(registry.content(name)))
     }
 }
 
@@ -80,7 +173,5 @@ impl Tool for LoadSkillTool {
 pub fn register(registry: &mut crate::tools::ToolRegistry, skills_dir: PathBuf) {
     let mut r = SkillRegistry::default();
     let _ = r.load_from(&skills_dir);
-    registry.register(Box::new(LoadSkillTool {
-        registry: std::sync::Arc::new(std::sync::Mutex::new(r)),
-    }));
+    registry.register(Box::new(LoadSkillTool { registry: Arc::new(Mutex::new(r)) }));
 }

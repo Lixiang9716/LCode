@@ -37,23 +37,41 @@ pub fn render_event(event: &AgentEvent) {
         AgentEvent::Error { message } => println!("\n❌ {}", message),
 
         // --- Session capabilities (learn-claude-code parity) ---
-        AgentEvent::TodoUpdated { items } => {
-            println!("\n📋 Todos ({}):", items.len());
-            for item in items {
-                let mark = match item.status {
-                    crate::agent::TodoStatus::Pending => "[ ]",
-                    crate::agent::TodoStatus::InProgress => "[>]",
-                    crate::agent::TodoStatus::Completed => "[x]",
-                };
-                println!("   {} #{}: {}", mark, item.id, item.text);
-            }
-        }
+        event => render_capability_event(event),
+    }
+}
+
+/// Render the todo list snapshot.
+fn render_todos(items: &[crate::agent::TodoItem]) {
+    println!("\n📋 Todos ({}):", items.len());
+    for item in items {
+        let mark = match item.status {
+            crate::agent::TodoStatus::Pending => "[ ]",
+            crate::agent::TodoStatus::InProgress => "[>]",
+            crate::agent::TodoStatus::Completed => "[x]",
+        };
+        println!("   {} #{}: {}", mark, item.id, item.text);
+    }
+}
+
+/// Render the session-capability events (todo/skill/compact/subagent/
+/// background/task/team/worktree) added for learn-claude-code parity.
+fn render_capability_event(event: &AgentEvent) {
+    match event {
+        AgentEvent::TodoUpdated { items } => render_todos(items),
         AgentEvent::TodoNag { turns_since_update } => {
-            println!("\n⏰ Reminder: update your todos ({} turns without update).", turns_since_update);
+            println!(
+                "\n⏰ Reminder: update your todos ({} turns without update).",
+                turns_since_update
+            );
         }
         AgentEvent::SkillLoaded { name } => println!("\n📖 Skill loaded: {}", name),
         AgentEvent::ContextCompacted { summary, transcript_path } => {
-            println!("\n🗜️  Context compacted: {} (transcript: {})", truncate(summary, 200), transcript_path);
+            println!(
+                "\n🗜️  Context compacted: {} (transcript: {})",
+                truncate(summary, 200),
+                transcript_path
+            );
         }
         AgentEvent::SubagentSpawned { prompt } => {
             println!("\n🧵 Subagent spawned: {}", truncate(prompt, 100));
@@ -74,7 +92,7 @@ pub fn render_event(event: &AgentEvent) {
             println!("\n📌 Task #{} → {}", id, status);
         }
         AgentEvent::TeamMessageSent { from, to, msg_type } => {
-            println!("\n💬 [{}] {} → {} ({})", from, to, msg_type, "team");
+            println!("\n💬 [{}] {} → {} (team)", from, to, msg_type);
         }
         AgentEvent::TeammateStateChanged { name, state } => {
             println!("\n👥 Teammate {} → {}", name, state);
@@ -85,6 +103,7 @@ pub fn render_event(event: &AgentEvent) {
         AgentEvent::WorktreeRemoved { name } => {
             println!("\n🌿 Worktree removed: {}", name);
         }
+        _ => {}
     }
 }
 
