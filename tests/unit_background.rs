@@ -114,11 +114,7 @@ async fn test_spawn_timeout_kills_command() {
 #[tokio::test]
 async fn test_events_published_on_start_and_completion() {
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
-    let manager = Arc::new(
-        BackgroundManager::new(&Config::default())
-            .unwrap()
-            .with_events(tx),
-    );
+    let manager = Arc::new(BackgroundManager::new(&Config::default()).unwrap().with_events(tx));
 
     let id = manager.spawn("echo event test", 10).unwrap();
 

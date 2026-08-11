@@ -5,8 +5,7 @@
 //! and the synchronous `compact` tool.
 
 use lcode::agent::{
-    auto_compact, micro_compact, CompactTool, KEEP_RECENT, PRESERVE_RESULT_TOOLS,
-    estimate_tokens,
+    auto_compact, estimate_tokens, micro_compact, CompactTool, KEEP_RECENT, PRESERVE_RESULT_TOOLS,
 };
 use lcode::llm::provider::MockLlmProvider;
 use lcode::llm::{
@@ -211,8 +210,7 @@ async fn test_auto_compact_focus_is_preserved_in_prompt() {
 async fn test_auto_compact_falls_back_when_summary_empty() {
     let tmp = TempDir::new().unwrap();
     let mut mock = MockLlmProvider::new();
-    mock.expect_chat()
-        .returning(|_, _| Ok(summary_response("   \n ")));
+    mock.expect_chat().returning(|_, _| Ok(summary_response("   \n ")));
 
     let mut messages = vec![ChatMessage::user("hi")];
     let summary = auto_compact(&mut messages, &mock, None, tmp.path()).await.unwrap();

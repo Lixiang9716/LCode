@@ -50,12 +50,8 @@ pub fn micro_compact(messages: &mut [ChatMessage], _provider: &dyn LlmProvider) 
         }
     }
     // Index tool results (oldest first); keep the last KEEP_RECENT.
-    let results: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.role == Role::Tool)
-        .map(|(i, _)| i)
-        .collect();
+    let results: Vec<usize> =
+        messages.iter().enumerate().filter(|(_, m)| m.role == Role::Tool).map(|(i, _)| i).collect();
     let mut compacted = 0;
     for &idx in &results[..results.len().saturating_sub(KEEP_RECENT)] {
         if messages[idx].content.len() <= COMPACT_MIN_LEN {

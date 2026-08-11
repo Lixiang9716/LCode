@@ -134,8 +134,7 @@ fn test_tools_share_one_manager_and_round_trip() {
     assert!(result.success);
     assert_eq!(result.output, "[ ] #1: Setup");
 
-    let result =
-        create.execute(&serde_json::json!({"title": "Tests", "blocked_by": [1]})).unwrap();
+    let result = create.execute(&serde_json::json!({"title": "Tests", "blocked_by": [1]})).unwrap();
     assert!(result.success);
     assert_eq!(result.output, "[ ] #2: Tests (blocked by: 1)");
 

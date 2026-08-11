@@ -35,11 +35,7 @@ pub async fn run_subagent(
         if response.finish_reason != FinishReason::ToolCalls {
             // Stop / Length / filter: the final text is the summary.
             let text = response.content.trim();
-            return Ok(if text.is_empty() {
-                "(no summary)".to_string()
-            } else {
-                text.to_string()
-            });
+            return Ok(if text.is_empty() { "(no summary)".to_string() } else { text.to_string() });
         }
 
         // Record the assistant message (with its tool calls) so the model
@@ -101,9 +97,8 @@ impl Tool for TaskTool {
     }
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        let prompt = args["prompt"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'prompt' argument"))?;
+        let prompt =
+            args["prompt"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'prompt' argument"))?;
         let max_turns = args["max_turns"].as_u64().unwrap_or(MAX_SUBAGENT_TURNS as u64) as u32;
 
         // The `Tool` trait is synchronous but subagents are async; the

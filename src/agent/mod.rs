@@ -43,10 +43,12 @@ mod team;
 mod todo;
 mod worktree;
 
-pub use background::{BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask};
+pub use background::{
+    BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask,
+};
 pub use compaction::{
-    auto_compact, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
-    PRESERVE_RESULT_TOOLS, estimate_tokens,
+    auto_compact, estimate_tokens, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
+    PRESERVE_RESULT_TOOLS,
 };
 pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
@@ -57,7 +59,9 @@ pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use skill::{LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
-pub use team::{MessageBus, Teammate, TeammateManager, TeammateState, TeamMessage, VALID_MSG_TYPES};
+pub use team::{
+    MessageBus, TeamMessage, Teammate, TeammateManager, TeammateState, VALID_MSG_TYPES,
+};
 pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
 pub use worktree::{EventLog, WorktreeManager};
 
@@ -101,11 +105,7 @@ pub async fn run_task(
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
     // state) and their own provider instance.
     let subagent_registry = Arc::new(ToolRegistry::new(config)?);
-    subagent::register(
-        &mut registry,
-        Arc::from(build_provider(config)?),
-        subagent_registry,
-    );
+    subagent::register(&mut registry, Arc::from(build_provider(config)?), subagent_registry);
 
     // Spawn the default renderer (stdout + stdin approval prompts)
     let renderer = render::spawn_renderer(events_rx, commands_tx);
@@ -113,14 +113,7 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(
-        provider,
-        registry,
-        auto_approve,
-        runtime,
-        todo,
-        background,
-    );
+    let mut executor = Executor::new(provider, registry, auto_approve, runtime, todo, background);
 
     // Start the task
     tracing::info!("Starting task: {}", task);

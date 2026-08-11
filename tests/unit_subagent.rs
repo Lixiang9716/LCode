@@ -65,8 +65,7 @@ async fn test_subagent_stop_returns_summary_with_fresh_context() {
 
 #[tokio::test]
 async fn test_subagent_empty_final_text_falls_back() {
-    let (provider, _seen) =
-        mock_with_queue(vec![response("   ", FinishReason::Stop, None)]);
+    let (provider, _seen) = mock_with_queue(vec![response("   ", FinishReason::Stop, None)]);
     let registry = ToolRegistry::new(&Config::default()).unwrap();
 
     let summary = run_subagent("Do nothing", provider, &registry, 30).await.unwrap();

@@ -61,8 +61,8 @@ impl TaskManager {
     /// Fetch a task by id.
     pub fn get(&self, id: u32) -> anyhow::Result<Task> {
         let path = self.tasks_dir.join(format!("task_{id}.json"));
-        let content = std::fs::read_to_string(&path)
-            .map_err(|_| anyhow::anyhow!("Task {id} not found"))?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|_| anyhow::anyhow!("Task {id} not found"))?;
         Ok(serde_json::from_str(&content)?)
     }
 
@@ -294,8 +294,7 @@ impl Tool for TaskUpdateTool {
         if !remove.is_empty() {
             blocked_by.retain(|blocked| !remove.contains(blocked));
         }
-        let blocked_by =
-            if add.is_empty() && remove.is_empty() { None } else { Some(blocked_by) };
+        let blocked_by = if add.is_empty() && remove.is_empty() { None } else { Some(blocked_by) };
         match manager.update(id, status.unwrap_or(current.status), blocked_by) {
             Ok(task) => Ok(ToolResult::ok(render_task(&task))),
             Err(e) => Ok(ToolResult::err(e.to_string())),

@@ -148,16 +148,14 @@ fn test_todo_update_tool_errors() {
     assert!(err.to_string().contains("missing required argument 'items'"));
 
     // Empty text -> failed tool result with the manager's message.
-    let result = tool
-        .execute(&serde_json::json!({"items": [{"text": "", "status": "pending"}]}))
-        .unwrap();
+    let result =
+        tool.execute(&serde_json::json!({"items": [{"text": "", "status": "pending"}]})).unwrap();
     assert!(!result.success);
     assert_eq!(result.output, "Item 1: text required");
 
     // Unknown status -> failed tool result.
-    let result = tool
-        .execute(&serde_json::json!({"items": [{"text": "x", "status": "bogus"}]}))
-        .unwrap();
+    let result =
+        tool.execute(&serde_json::json!({"items": [{"text": "x", "status": "bogus"}]})).unwrap();
     assert!(!result.success);
     assert!(result.output.contains("invalid"));
 }

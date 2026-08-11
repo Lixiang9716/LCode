@@ -397,7 +397,10 @@ impl Tool for BackgroundCheckTool {
 }
 
 /// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry, manager: std::sync::Arc<BackgroundManager>) {
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    manager: std::sync::Arc<BackgroundManager>,
+) {
     registry.register(Box::new(BackgroundRunTool { manager: manager.clone() }));
     registry.register(Box::new(BackgroundCheckTool { manager }));
 }

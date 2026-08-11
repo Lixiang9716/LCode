@@ -117,8 +117,7 @@ impl SkillRegistry {
                 format!("<skill name=\"{}\">\n{}\n</skill>", name, body.trim())
             }
             None => {
-                let available: Vec<&str> =
-                    self.skills.iter().map(|s| s.name.as_str()).collect();
+                let available: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
                 let list =
                     if available.is_empty() { "(none)".to_string() } else { available.join(", ") };
                 format!("Error: Unknown skill '{}'. Available: {}", name, list)
@@ -157,11 +156,8 @@ impl Tool for LoadSkillTool {
     }
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|n| !n.is_empty());
+        let name =
+            args.get("name").and_then(|v| v.as_str()).map(str::trim).filter(|n| !n.is_empty());
         let Some(name) = name else {
             return Ok(ToolResult::err("load_skill requires a 'name' argument"));
         };
@@ -177,7 +173,5 @@ impl Tool for LoadSkillTool {
 pub fn register(registry: &mut crate::tools::ToolRegistry, skills_dir: PathBuf) {
     let mut r = SkillRegistry::default();
     let _ = r.load_from(&skills_dir);
-    registry.register(Box::new(LoadSkillTool {
-        registry: Arc::new(Mutex::new(r)),
-    }));
+    registry.register(Box::new(LoadSkillTool { registry: Arc::new(Mutex::new(r)) }));
 }
