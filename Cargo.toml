@@ -67,9 +67,9 @@ regex-lite = "0.1"
 tempfile = "3"
 pretty_assertions = "1"
 tokio-test = "0.4"
-mockall = "0.15"
+mockall = "0.13"
 rstest = "0.22"
-serial_test = "3"
+serial_test = "4"
 wiremock = "0.6"
 
 [profile.release]
