@@ -17,7 +17,7 @@ mod planner;
 
 pub use executor::Executor;
 pub use memory::ConversationMemory;
-pub use planner::Planner;
+pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 
 /// Run a single-shot agent task.
 ///
