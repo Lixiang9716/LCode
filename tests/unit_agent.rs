@@ -5,8 +5,8 @@
 //! tests exercise only the crate's public API from outside the crate.
 
 use lcode::agent::{
-    AgentEvent, AgentRuntime, ConversationMemory, Executor, PlanStatus, PlanStep, Planner,
-    StepStatus,
+    AgentEvent, AgentRuntime, BackgroundManager, ConversationMemory, Executor, PlanStatus,
+    PlanStep, Planner, StepStatus, TodoManager,
 };
 use lcode::config::Config;
 use lcode::llm::provider::MockLlmProvider;
@@ -68,7 +68,18 @@ fn executor_with_queue(
     mock.expect_validate().times(0..).returning(|| Ok(()));
 
     let (runtime, events_rx, _commands_tx) = AgentRuntime::new();
-    (Executor::new(Box::new(mock), registry, true, runtime), call_count, events_rx)
+    (
+        Executor::new(
+            Box::new(mock),
+            registry,
+            true,
+            runtime,
+            Arc::new(Mutex::new(TodoManager::default())),
+            Arc::new(BackgroundManager::default()),
+        ),
+        call_count,
+        events_rx,
+    )
 }
 
 fn default_registry_in(dir: &std::path::Path) -> ToolRegistry {
