@@ -11,8 +11,8 @@ retries = 1
 # Run all tests even if some fail (maximizes CI signal)
 fail-fast = false
 # Hard per-test timeout
-test-timeout = "120s"
+timeout = "120s"
 
-[test-groups]
-# Run integration tests in their own process group
-integration = { max-threads = 2 }
+[test-groups.integration]
+# Run integration tests with limited concurrency
+max-threads = 2
