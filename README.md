@@ -4,7 +4,7 @@
 
 LCode is an AI-powered coding assistant that operates directly in your terminal. It can understand your codebase, plan complex development tasks, and execute them by reading, writing, searching files, and running shell commands — all under your supervision.
 
-[![Rust](https://img.shields.io/badge/rust-1.80+-orange.svg)](https://rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.94+-orange.svg)](https://rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## ✨ Features
@@ -21,7 +21,7 @@ LCode is an AI-powered coding assistant that operates directly in your terminal.
 
 ### Prerequisites
 
-- Rust 1.80+ (install via [rustup](https://rustup.rs))
+- Rust 1.94+ (install via [rustup](https://rustup.rs))
 - An API key from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com)
 
 ### Installation

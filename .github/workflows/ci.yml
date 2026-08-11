@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        rust: [stable, 1.80.0]
+        rust: [stable, 1.94.0]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -35,11 +35,11 @@ jobs:
         run: cargo doc --no-deps --all-features
 
   msrv:
-    name: MSRV (1.80)
+    name: MSRV (1.94)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.80.0
+      - uses: dtolnay/rust-toolchain@1.94.0
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-features

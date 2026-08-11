@@ -17,7 +17,7 @@ more.
 
 ### Prerequisites
 
-- **Rust 1.80 or later** — install via [rustup](https://rustup.rs)
+- **Rust 1.94 or later** — install via [rustup](https://rustup.rs)
 - **Git** — for cloning the repository and managing changes
 
 ### Getting Started

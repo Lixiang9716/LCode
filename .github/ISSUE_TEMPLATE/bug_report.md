@@ -28,7 +28,7 @@ If possible, include a minimal code snippet or repository that reproduces the is
 ## Environment
 
 - **OS**: [e.g. Ubuntu 24.04, macOS 14, Windows 11]
-- **Rust version**: [e.g. 1.80.0] (run `rustc --version`)
+- **Rust version**: [e.g. 1.94.0] (run `rustc --version`)
 - **LCode version**: [e.g. 0.1.0] (run `lcode --version`)
 
 ## Logs / Error Output

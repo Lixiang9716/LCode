@@ -4,7 +4,7 @@
 # =============================================================================
 
 # ---- Builder stage ----
-FROM rust:1.80-slim AS builder
+FROM rust:1.94-slim AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./

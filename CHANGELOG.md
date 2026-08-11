@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Raised MSRV from Rust 1.80 to **1.94** to support edition 2024 dependencies
+  (serial_test 4.x requires Rust 1.93.1+)
+
 ## [0.1.0] - 2026-08-11
 
 ### Added
