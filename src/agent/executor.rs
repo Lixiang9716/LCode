@@ -1,35 +1,53 @@
 //! Agent executor — runs the main agent loop.
 //!
-//! The executor manages the conversation loop between the user,
-//! the LLM, and the tool system. It handles:
-//! - Sending messages to the LLM
-//! - Parsing tool call requests
-//! - Executing tools (with user approval if required)
-//! - Feeding results back to the LLM
+//! The executor is event-driven: every observable step is published on the
+//! runtime's event bus ([`AgentEvent`]) instead of printing directly, and
+//! tool approvals flow back through [`AgentCommand`] messages instead of
+//! blocking on stdin. Observers (REPL, logging, tests) subscribe to the
+//! event stream.
 
+use crate::agent::event::AgentEvent;
+use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{ConversationMemory, Planner};
 use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
 use crate::tools::ToolRegistry;
 
+/// Loop control signal returned by response/tool handlers.
+enum LoopControl {
+    /// Keep running the agent loop.
+    Continue,
+    /// Stop the loop (task finished).
+    Stop,
+    /// Stop the loop because the user aborted.
+    Abort,
+}
+
 /// The executor drives the agent loop.
 ///
-/// Owns the LLM provider and tool registry so it can be constructed
-/// with mocks in tests.
+/// Owns the LLM provider, tool registry and runtime so it can be
+/// constructed with mocks in tests.
 pub struct Executor {
     provider: Box<dyn LlmProvider>,
     registry: ToolRegistry,
     auto_approve: bool,
+    runtime: AgentRuntime,
 }
 
 impl Executor {
-    /// Create a new executor.
-    pub fn new(provider: Box<dyn LlmProvider>, registry: ToolRegistry, auto_approve: bool) -> Self {
-        Self { provider, registry, auto_approve }
+    /// Create a new executor bound to the given runtime.
+    pub fn new(
+        provider: Box<dyn LlmProvider>,
+        registry: ToolRegistry,
+        auto_approve: bool,
+        runtime: AgentRuntime,
+    ) -> Self {
+        Self { provider, registry, auto_approve, runtime }
     }
 
     /// Run the agent loop for a given task.
     ///
-    /// Returns the conversation memory after the run so callers (and
+    /// Publishes session/turn/tool events on the runtime event bus and
+    /// returns the conversation memory after the run so callers (and
     /// tests) can inspect the final message history.
     pub async fn run(
         &mut self,
@@ -47,16 +65,20 @@ impl Executor {
 
         let mut turn = 0u32;
 
-        println!("\n🤖 LCode Agent starting...\n");
-        println!("Task: {}\n", task);
+        self.runtime.publish(AgentEvent::SessionStarted { task: task.to_string() });
 
+        let mut aborted = false;
         loop {
             if turn >= max_turns {
-                println!("\n⚠️  Reached maximum turns ({}). Stopping.", max_turns);
+                self.runtime.publish(AgentEvent::TaskAborted {
+                    reason: format!("Reached maximum turns ({})", max_turns),
+                });
+                aborted = true;
                 break;
             }
 
             turn += 1;
+            self.runtime.publish(AgentEvent::TurnStarted { turn });
             tracing::debug!(turn, "Agent turn");
 
             // Get the current conversation context
@@ -65,18 +87,30 @@ impl Executor {
             // Send to LLM
             let response = self.provider.chat(&context, &tool_defs).await?;
 
-            // Handle the response; stop when the model signals completion
-            if self.handle_response(response, &mut memory).await? {
+            // Handle the response
+            let finished = match self.handle_response(response, &mut memory).await? {
+                LoopControl::Stop => true,
+                LoopControl::Abort => {
+                    abort_session(&self.runtime, &mut aborted);
+                    break;
+                }
+                LoopControl::Continue => false,
+            };
+
+            self.runtime.publish(AgentEvent::TurnFinished { turn });
+            if finished {
                 break;
             }
         }
 
-        println!("\n✅ Task completed in {} turns.", turn);
-        let summary = response_usage_summary(&memory);
-        println!(
-            "Tokens used: ~{} prompt, ~{} completion, ~{} total",
-            summary.0, summary.1, summary.2
-        );
+        if !aborted {
+            let summary = response_usage_summary(&memory);
+            self.runtime.publish(AgentEvent::TaskFinished {
+                turns: turn,
+                prompt_tokens: summary.0 as u32,
+                completion_tokens: summary.1 as u32,
+            });
+        }
 
         Ok(memory)
     }
@@ -84,92 +118,95 @@ impl Executor {
     /// Handle a single LLM response.
     ///
     /// Executes any requested tool calls (recording results in memory) or
-    /// prints the final answer. Returns `true` when the loop should stop.
+    /// publishes the final answer. Returns the loop control signal.
     async fn handle_response(
-        &self,
+        &mut self,
         response: crate::llm::LlmResponse,
         memory: &mut ConversationMemory,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<LoopControl> {
         match response.finish_reason {
             FinishReason::ToolCalls => {
                 if let Some(ref tool_calls) = response.tool_calls {
-                    // Print the assistant's text content if any
-                    print_assistant_text(&response.content);
+                    // Publish the assistant's text content if any
+                    publish_text(&self.runtime, &response.content);
 
                     // Add the assistant message with tool calls to memory
                     memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
 
                     // Execute each tool call
-                    self.execute_tool_calls(tool_calls, memory).await?;
+                    self.execute_tool_calls(tool_calls, memory).await
+                } else {
+                    Ok(LoopControl::Continue)
                 }
-                Ok(false)
             }
             FinishReason::Stop | FinishReason::Length => {
                 // Final response — no more tool calls
-                println!("\n{}", response.content);
+                publish_text(&self.runtime, &response.content);
                 memory.add_assistant(response.content);
-                Ok(true)
+                Ok(LoopControl::Stop)
             }
             FinishReason::ContentFilter => {
-                println!("\n⚠️  Response blocked by content filter.");
-                Ok(true)
+                self.runtime.publish(AgentEvent::Error {
+                    message: "Response blocked by content filter.".to_string(),
+                });
+                Ok(LoopControl::Stop)
             }
             FinishReason::Unknown => {
                 // Assume stop — just output the content
-                if !response.content.is_empty() {
-                    println!("\n{}", response.content);
-                }
-                Ok(true)
+                publish_text(&self.runtime, &response.content);
+                Ok(LoopControl::Stop)
             }
         }
     }
 
     /// Execute a sequence of tool calls, recording each result in memory.
+    ///
+    /// Stops at the first abort signal from the user.
     async fn execute_tool_calls(
-        &self,
+        &mut self,
         tool_calls: &[crate::llm::ToolCallRequest],
         memory: &mut ConversationMemory,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<LoopControl> {
         for tc in tool_calls {
-            self.handle_tool_call(tc, memory).await?;
+            match self.handle_tool_call(tc, memory).await? {
+                LoopControl::Abort => return Ok(LoopControl::Abort),
+                LoopControl::Stop | LoopControl::Continue => {}
+            }
         }
-        Ok(())
+        Ok(LoopControl::Continue)
     }
 
-    /// Handle a single tool call: ask for approval, execute, and record result.
+    /// Handle a single tool call: request approval via the event bus,
+    /// execute, and publish the result.
     async fn handle_tool_call(
-        &self,
+        &mut self,
         tc: &crate::llm::ToolCallRequest,
         memory: &mut ConversationMemory,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<LoopControl> {
         let tool_name = &tc.function.name;
         let args = &tc.function.arguments;
 
         // Parse arguments
         let parsed_args: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
 
-        // Display what the agent wants to do
-        println!("\n🔧 Tool call: {}(", tool_name);
-        println!("   args: {}", serde_json::to_string_pretty(&parsed_args)?);
-        print!(")");
+        // Publish the tool call request with its approval requirement
+        self.runtime.publish(AgentEvent::ToolCallRequested {
+            id: tc.id.clone(),
+            name: tool_name.clone(),
+            arguments: parsed_args.clone(),
+            requires_approval: !self.auto_approve,
+        });
 
-        // Request approval if needed
+        // Request approval through the command channel (non-blocking stdin)
         if !self.auto_approve {
-            print!("\n   Execute? [y/N] ");
-            use std::io::Write;
-            std::io::stdout().flush()?;
-
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            let input = input.trim().to_lowercase();
-
-            if input != "y" && input != "yes" {
-                println!("   ⏭️  Skipped (user declined).");
-                memory.add_tool_result(
-                    format!("Tool call declined by user: {}", tool_name),
-                    tc.id.clone(),
-                );
-                return Ok(());
+            match self.runtime.await_approval(&tc.id).await {
+                ApprovalDecision::Approved => {}
+                ApprovalDecision::Rejected => {
+                    self.runtime.publish(AgentEvent::ToolCallDeclined { id: tc.id.clone() });
+                    record_declined(memory, tool_name, &tc.id);
+                    return Ok(LoopControl::Continue);
+                }
+                ApprovalDecision::Aborted => return Ok(LoopControl::Abort),
             }
         }
 
@@ -177,34 +214,46 @@ impl Executor {
         match self.registry.execute(tool_name, &parsed_args) {
             Ok(result) => {
                 let result_str = format!("{}", result);
-                println!("   ✅ Result: {}", truncate(&result_str, 500));
+                self.runtime.publish(AgentEvent::ToolCallExecuted {
+                    id: tc.id.clone(),
+                    output: result_str.clone(),
+                });
                 memory.add_tool_result(result_str, tc.id.clone());
             }
             Err(e) => {
                 let error_str = format!("Error executing tool: {}", e);
-                println!("   ❌ {}", error_str);
+                self.runtime.publish(AgentEvent::ToolCallFailed {
+                    id: tc.id.clone(),
+                    error: error_str.clone(),
+                });
                 memory.add_tool_result(error_str, tc.id.clone());
             }
         }
 
-        Ok(())
+        Ok(LoopControl::Continue)
     }
 }
 
-/// Print assistant text content, if any, followed by a blank line.
-fn print_assistant_text(content: &str) {
+/// Publish assistant text as a [`AgentEvent::TextGenerated`] event when
+/// non-empty.
+fn publish_text(runtime: &AgentRuntime, content: &str) {
     if !content.is_empty() {
-        println!("\n{}", content);
+        runtime.publish(AgentEvent::TextGenerated { content: content.to_string() });
     }
 }
 
-/// Truncate a string to max_len characters, adding "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
-    &s[..boundary]
+/// Publish a task-abort event and mark the session as aborted.
+fn abort_session(runtime: &AgentRuntime, aborted: &mut bool) {
+    runtime.publish(AgentEvent::TaskAborted { reason: "Aborted by user".to_string() });
+    *aborted = true;
+}
+
+/// Record a user-declined tool call in the conversation memory.
+fn record_declined(memory: &mut ConversationMemory, tool_name: &str, tool_call_id: &str) {
+    memory.add_tool_result(
+        format!("Tool call declined by user: {}", tool_name),
+        tool_call_id.to_string(),
+    );
 }
 
 /// Get a summary of token usage from the conversation memory.

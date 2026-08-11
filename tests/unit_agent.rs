@@ -4,7 +4,10 @@
 //! Migrated verbatim from the `#[cfg(test)]` code in `src/agent/`: these
 //! tests exercise only the crate's public API from outside the crate.
 
-use lcode::agent::{ConversationMemory, Executor, PlanStatus, PlanStep, Planner, StepStatus};
+use lcode::agent::{
+    AgentEvent, AgentRuntime, ConversationMemory, Executor, PlanStatus, PlanStep, Planner,
+    StepStatus,
+};
 use lcode::config::Config;
 use lcode::llm::provider::MockLlmProvider;
 use lcode::llm::{
@@ -39,11 +42,14 @@ fn response(
 
 /// Build an executor backed by a mock provider that serves responses
 /// from a queue. Every received message batch is recorded into `seen`.
+///
+/// Returns the executor, the LLM call counter, and the event stream
+/// subscription for asserting the published agent events.
 fn executor_with_queue(
     responses: Vec<LlmResponse>,
     registry: ToolRegistry,
     seen: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
-) -> (Executor, Arc<AtomicUsize>) {
+) -> (Executor, Arc<AtomicUsize>, tokio::sync::broadcast::Receiver<AgentEvent>) {
     let queue: Arc<Mutex<VecDeque<LlmResponse>>> = Arc::new(Mutex::new(VecDeque::from(responses)));
     let call_count = Arc::new(AtomicUsize::new(0));
 
@@ -61,7 +67,8 @@ fn executor_with_queue(
     mock.expect_name().times(0..).return_const("mock".to_string());
     mock.expect_validate().times(0..).returning(|| Ok(()));
 
-    (Executor::new(Box::new(mock), registry, true), call_count)
+    let (runtime, events_rx, _commands_tx) = AgentRuntime::new();
+    (Executor::new(Box::new(mock), registry, true, runtime), call_count, events_rx)
 }
 
 fn default_registry_in(dir: &std::path::Path) -> ToolRegistry {
@@ -70,10 +77,28 @@ fn default_registry_in(dir: &std::path::Path) -> ToolRegistry {
     ToolRegistry::new(&Config::default()).expect("build tool registry")
 }
 
+/// Collect published events until the session ends (`TaskFinished` /
+/// `TaskAborted`) or the channel closes, with a timeout guard so a
+/// missing terminal event fails the test instead of hanging forever.
+async fn collect_events(mut rx: tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {
+    let mut events = Vec::new();
+    while let Ok(Ok(event)) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+    {
+        let done =
+            matches!(event, AgentEvent::TaskFinished { .. } | AgentEvent::TaskAborted { .. });
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    events
+}
+
 #[tokio::test]
 async fn test_run_completes_on_stop_and_records_assistant_message() {
     let seen: Arc<Mutex<Vec<Vec<ChatMessage>>>> = Arc::new(Mutex::new(Vec::new()));
-    let (mut executor, call_count) = executor_with_queue(
+    let (mut executor, call_count, events_rx) = executor_with_queue(
         vec![response("Final answer.", FinishReason::Stop, None)],
         ToolRegistry::new(&Config::default()).unwrap(),
         seen.clone(),
@@ -86,18 +111,31 @@ async fn test_run_completes_on_stop_and_records_assistant_message() {
 
     // Exactly one LLM call, receiving system + user context.
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    let recorded = seen.lock().unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].len(), 2);
-    assert!(matches!(recorded[0][0].role, Role::System));
-    assert_eq!(recorded[0][0].content, "You are a helpful assistant.");
-    assert!(matches!(recorded[0][1].role, Role::User));
-    assert!(recorded[0][1].content.contains("Write a test"));
+    {
+        let recorded = seen.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].len(), 2);
+        assert!(matches!(recorded[0][0].role, Role::System));
+        assert_eq!(recorded[0][0].content, "You are a helpful assistant.");
+        assert!(matches!(recorded[0][1].role, Role::User));
+        assert!(recorded[0][1].content.contains("Write a test"));
+    } // guard dropped before any await
 
     // The final assistant message must have been added to memory.
     let msgs = memory.messages();
     assert!(msgs.iter().any(|m| matches!(m.role, Role::Assistant)));
     assert!(msgs.iter().any(|m| matches!(m.role, Role::Assistant) && m.content == "Final answer."));
+
+    // Event-driven: the session must publish the expected event sequence.
+    let events = collect_events(events_rx).await;
+    assert!(matches!(&events[0], AgentEvent::SessionStarted { .. }));
+    assert!(matches!(&events[1], AgentEvent::TurnStarted { turn: 1 }));
+    assert!(matches!(
+        &events[2],
+        AgentEvent::TextGenerated { content } if content == "Final answer."
+    ));
+    assert!(matches!(&events[3], AgentEvent::TurnFinished { turn: 1 }));
+    assert!(matches!(&events[4], AgentEvent::TaskFinished { turns: 1, .. }));
 }
 
 #[tokio::test]
@@ -108,7 +146,7 @@ async fn test_tool_call_executes_write_file_in_tempdir() {
     let registry = default_registry_in(tmp.path());
 
     let seen: Arc<Mutex<Vec<Vec<ChatMessage>>>> = Arc::new(Mutex::new(Vec::new()));
-    let (mut executor, _call_count) = executor_with_queue(
+    let (mut executor, _call_count, _events_rx) = executor_with_queue(
         vec![
             response(
                 "I will write the file.",
@@ -162,7 +200,7 @@ async fn test_max_turns_truncates_never_finishing_loop() {
     let registry = default_registry_in(tmp.path());
 
     let seen: Arc<Mutex<Vec<Vec<ChatMessage>>>> = Arc::new(Mutex::new(Vec::new()));
-    let (mut executor, call_count) = executor_with_queue(
+    let (mut executor, call_count, events_rx) = executor_with_queue(
         vec![
             response(
                 "",
@@ -193,6 +231,14 @@ async fn test_max_turns_truncates_never_finishing_loop() {
     // The loop must stop after exactly max_turns LLM calls.
     assert_eq!(call_count.load(Ordering::SeqCst), 3);
     assert_eq!(seen.lock().unwrap().len(), 3);
+
+    // Max-turns aborts the session via the event bus.
+    let events = collect_events(events_rx).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::TaskAborted { .. })),
+        "expected TaskAborted event at max turns, got: {:?}",
+        events
+    );
 }
 
 // ---------------------------------------------------------------------------
