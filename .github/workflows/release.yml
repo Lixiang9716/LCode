@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     branches: [main]
+  # Manual trigger: rebuild/upload assets for an existing release tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build assets for (e.g. v0.1.0)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -38,7 +45,7 @@ jobs:
   build-assets:
     name: Build assets (${{ matrix.target }})
     needs: release-please
-    if: ${{ fromJson(needs.release-please.outputs.releases_created) }}
+    if: ${{ fromJson(needs.release-please.outputs.releases_created) || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -60,6 +67,8 @@ jobs:
             artifact: lcode-windows-x86_64
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,6 +77,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
+
+      - name: Install musl toolchain (ring C compiler)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
@@ -87,6 +100,6 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          tag_name: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
           files: ${{ env.artifact_path }}
           generate_release_notes: true
