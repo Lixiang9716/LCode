@@ -114,8 +114,7 @@ fn config_get_action() {
 
 #[test]
 fn config_set_action() {
-    let cli =
-        Cli::try_parse_from(["lcode", "config", "set", "llm.provider", "openai"]).unwrap();
+    let cli = Cli::try_parse_from(["lcode", "config", "set", "llm.provider", "openai"]).unwrap();
     match cli.command {
         Some(Command::Config { action }) => match action {
             ConfigAction::Set { key, value } => {
@@ -160,9 +159,7 @@ fn unknown_subcommand_is_rejected() {
 
 /// Run the async `run()` on a fresh single-threaded runtime.
 fn run_blocking(cli: Cli, cfg: Config) -> anyhow::Result<()> {
-    tokio::runtime::Runtime::new()
-        .expect("failed to create tokio runtime")
-        .block_on(run(cli, cfg))
+    tokio::runtime::Runtime::new().expect("failed to create tokio runtime").block_on(run(cli, cfg))
 }
 
 fn cli_with(command: Command) -> Cli {
@@ -226,9 +223,8 @@ fn run_config_get_routes_to_config_module() {
     let temp_dir = tempfile::tempdir().unwrap();
     isolate_home(&temp_dir);
 
-    let cli = cli_with(Command::Config {
-        action: ConfigAction::Get { key: "llm.provider".to_string() },
-    });
+    let cli =
+        cli_with(Command::Config { action: ConfigAction::Get { key: "llm.provider".to_string() } });
     assert!(run_blocking(cli, Config::default()).is_ok());
 
     // Unknown keys surface as errors through the same route.
@@ -246,10 +242,7 @@ fn run_config_set_routes_to_config_module_and_persists() {
     isolate_home(&temp_dir);
 
     let cli = cli_with(Command::Config {
-        action: ConfigAction::Set {
-            key: "llm.provider".to_string(),
-            value: "openai".to_string(),
-        },
+        action: ConfigAction::Set { key: "llm.provider".to_string(), value: "openai".to_string() },
     });
     assert!(run_blocking(cli, Config::default()).is_ok());
 

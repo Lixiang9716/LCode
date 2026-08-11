@@ -16,12 +16,12 @@ mod settings;
 pub use commands::handle_command;
 #[doc(hidden)]
 pub use commands::{get_config_value, mask_key, set_config_value};
-pub use settings::{AgentConfig, Config, LlmConfig, ToolsConfig};
 #[doc(hidden)]
 pub use settings::{
     default_context_size, default_max_tokens, default_max_turns, default_model,
     default_require_approval, default_temperature,
 };
+pub use settings::{AgentConfig, Config, LlmConfig, ToolsConfig};
 use std::path::PathBuf;
 
 /// Load configuration from all sources.

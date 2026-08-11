@@ -297,8 +297,7 @@ fn set_config_value_updates_existing_file() {
     set_config_value("llm.provider", "anthropic").unwrap();
 
     let parsed: Config =
-        toml::from_str(&std::fs::read_to_string(global_config_path().unwrap()).unwrap())
-            .unwrap();
+        toml::from_str(&std::fs::read_to_string(global_config_path().unwrap()).unwrap()).unwrap();
     assert_eq!(parsed.llm.provider, "anthropic");
 }
 

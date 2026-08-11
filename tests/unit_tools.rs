@@ -158,9 +158,8 @@ fn test_read_file_limit_truncates() {
 
     let tool = ReadFileTool::new_with_root(dir.path().to_path_buf());
 
-    let result = tool
-        .execute(&serde_json::json!({"path": "test.txt", "offset": 1, "limit": 2}))
-        .unwrap();
+    let result =
+        tool.execute(&serde_json::json!({"path": "test.txt", "offset": 1, "limit": 2})).unwrap();
     assert!(result.success);
     assert!(result.output.contains("line 2"));
     assert!(result.output.contains("line 3"));
@@ -209,8 +208,7 @@ fn test_write_file_empty_content() {
     let dir = TempDir::new().unwrap();
     let tool = WriteFileTool::new_with_root(dir.path().to_path_buf());
 
-    let result =
-        tool.execute(&serde_json::json!({"path": "empty.txt", "content": ""})).unwrap();
+    let result = tool.execute(&serde_json::json!({"path": "empty.txt", "content": ""})).unwrap();
     assert!(result.success);
     assert!(result.output.contains("Wrote 0 bytes (0 lines)"));
     assert_eq!(std::fs::read_to_string(dir.path().join("empty.txt")).unwrap(), "");
@@ -327,8 +325,7 @@ fn test_edit_file_multiline() {
 fn setup_search_dir() -> TempDir {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("nested")).unwrap();
-    std::fs::write(dir.path().join("alpha.rs"), "fn alpha() {\n    let needle = 42;\n}\n")
-        .unwrap();
+    std::fs::write(dir.path().join("alpha.rs"), "fn alpha() {\n    let needle = 42;\n}\n").unwrap();
     std::fs::write(
         dir.path().join("nested/beta.rs"),
         "fn beta() {\n    println!(\"needle here\");\n}\n",
@@ -361,8 +358,7 @@ fn test_grep_no_matches() {
     let dir = setup_search_dir();
     let tool = GrepTool::new_with_root(dir.path().to_path_buf());
 
-    let result =
-        tool.execute(&serde_json::json!({"pattern": "zzz_nonexistent_pattern"})).unwrap();
+    let result = tool.execute(&serde_json::json!({"pattern": "zzz_nonexistent_pattern"})).unwrap();
     assert!(result.success);
     assert!(result.output.contains("No matches found"));
 }
@@ -446,7 +442,8 @@ fn test_safety_check_dangerous_patterns() {
 
 #[test]
 fn test_safety_check_denied_commands() {
-    let tool = ShellTool::with_denied(PathBuf::from("/tmp"), vec!["git push".into(), "curl".into()]);
+    let tool =
+        ShellTool::with_denied(PathBuf::from("/tmp"), vec!["git push".into(), "curl".into()]);
 
     assert!(tool.check_safety("git push origin main").is_err());
     assert!(tool.check_safety("CURL -s https://example.com").is_err());
@@ -472,8 +469,7 @@ fn test_command_with_stderr() {
 fn test_command_failure_exit_code() {
     let tool = ShellTool::new_with_root(PathBuf::from("."));
 
-    let result =
-        tool.execute(&serde_json::json!({"command": "echo oops >&2; exit 3"})).unwrap();
+    let result = tool.execute(&serde_json::json!({"command": "echo oops >&2; exit 3"})).unwrap();
     assert!(result.success);
     assert!(result.output.contains("Command failed"));
     assert!(result.output.contains("exit code: 3"));
@@ -485,12 +481,10 @@ fn test_execute_with_timeout_param() {
     let tool = ShellTool::new_with_root(PathBuf::from("."));
 
     // timeout field must be parsed without error (and clamped to max 300).
-    let result =
-        tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 5})).unwrap();
+    let result = tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 5})).unwrap();
     assert!(result.success);
     assert!(result.output.contains("hi"));
 
-    let result =
-        tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 9999})).unwrap();
+    let result = tool.execute(&serde_json::json!({"command": "echo hi", "timeout": 9999})).unwrap();
     assert!(result.success);
 }

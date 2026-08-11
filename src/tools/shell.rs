@@ -31,14 +31,24 @@ impl ShellTool {
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn new_with_root(root: PathBuf) -> Self {
-        Self { workspace_root: root, allowed_commands: vec![], denied_commands: vec![], timeout_secs: 120 }
+        Self {
+            workspace_root: root,
+            allowed_commands: vec![],
+            denied_commands: vec![],
+            timeout_secs: 120,
+        }
     }
 
     /// Create a tool rooted at `root` with custom denied commands.
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn with_denied(root: PathBuf, denied: Vec<String>) -> Self {
-        Self { workspace_root: root, allowed_commands: vec![], denied_commands: denied, timeout_secs: 120 }
+        Self {
+            workspace_root: root,
+            allowed_commands: vec![],
+            denied_commands: denied,
+            timeout_secs: 120,
+        }
     }
 
     /// Check if a command is safe to execute.
