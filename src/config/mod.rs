@@ -7,8 +7,8 @@
 //! 4. User-global `~/.config/lcode/config.toml`
 //!
 //! Submodules:
-//! - [`settings`]: configuration data structures and defaults
-//! - [`commands`]: `lcode config` subcommand handlers
+//! - `settings`: configuration data structures and defaults
+//! - `commands`: `lcode config` subcommand handlers
 
 mod commands;
 mod settings;

@@ -9,18 +9,18 @@
 //! Architecture:
 //! 1. [`AgentRuntime`] owns the event bus (broadcast) and command channel
 //! 2. [`Executor`] runs the loop, publishing events and awaiting approvals
-//! 3. [`render`] provides the default stdout renderer used by single-shot
-//!    tasks; other subscribers can observe the same stream
+//! 3. [`render_event`] renders the stream for stdout by default; other
+//!    subscribers can observe the same stream
 //!
 //! Session capabilities (learn-claude-code parity):
-//! - [`todo`] — model-owned plan + nag reminders (s03)
-//! - [`skill`] — two-layer skill loading (s05)
-//! - [`compaction`] — three-level context compression (s06)
-//! - [`subagent`] — context-isolated subtask delegation (s04)
-//! - [`background`] — non-blocking background commands (s08)
-//! - [`task`] — persistent disk-backed task board (s07)
-//! - [`team`] — multi-agent teams, protocols, autonomy (s09-s11)
-//! - [`worktree`] — git worktree task isolation (s12)
+//! - [`TodoManager`] — model-owned plan + nag reminders (s03)
+//! - [`SkillRegistry`] — two-layer skill loading (s05)
+//! - [`estimate_tokens`] — three-level context compression (s06)
+//! - [`run_subagent`] — context-isolated subtask delegation (s04)
+//! - [`BackgroundManager`] — non-blocking background commands (s08)
+//! - [`TaskManager`] — persistent disk-backed task board (s07)
+//! - [`TeammateManager`] — multi-agent teams, protocols, autonomy (s09-s11)
+//! - [`WorktreeManager`] — git worktree task isolation (s12)
 
 use crate::config::Config;
 use crate::llm::LlmProvider;

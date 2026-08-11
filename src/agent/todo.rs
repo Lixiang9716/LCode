@@ -48,7 +48,7 @@ pub struct TodoManager {
 impl TodoManager {
     /// Replace the whole list with the given items.
     ///
-    /// Constraints (matching the s03 reference): at most [`MAX_TODOS`]
+    /// Constraints (matching the s03 reference): at most `MAX_TODOS`
     /// items, every item needs non-empty text, and at most one item may be
     /// `in_progress`. On success the manager assigns positional ids
     /// (1-based) and records the current turn as the last-update turn.

@@ -206,7 +206,7 @@ impl TeammateManager {
     }
     /// Spawn (or reuse an idle) teammate with the given role. Registers
     /// the member in `.team/config.json` and starts the teammate loop
-    /// ([`run_teammate_loop`]) as a daemon task when a tokio runtime
+    /// (`run_teammate_loop`) as a daemon task when a tokio runtime
     /// exists; basic-version loop: no LLM.
     pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
         if name.is_empty() {
