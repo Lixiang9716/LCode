@@ -225,3 +225,122 @@ impl Tool for GlobTool {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a tempdir with a few files: two Rust files containing "needle"
+    /// (one nested), and one text file without it.
+    fn setup_search_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(
+            dir.path().join("alpha.rs"),
+            "fn alpha() {\n    let needle = 42;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("nested/beta.rs"),
+            "fn beta() {\n    println!(\"needle here\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("gamma.txt"),
+            "nothing interesting in this text file\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_grep_finds_matches() {
+        let dir = setup_search_dir();
+        let tool = GrepTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "needle"}))
+            .unwrap();
+        assert!(result.success);
+        // Both matching files with their line number (file:line) must appear.
+        assert!(result.output.contains("alpha.rs:2"));
+        assert!(result.output.contains("beta.rs:2"));
+        // Line content must be included.
+        assert!(result.output.contains("let needle = 42"));
+        assert!(result.output.contains("needle here"));
+        // The non-matching file must not appear.
+        assert!(!result.output.contains("gamma.txt"));
+    }
+
+    #[test]
+    fn test_grep_no_matches() {
+        let dir = setup_search_dir();
+        let tool = GrepTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "zzz_nonexistent_pattern"}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("No matches found"));
+    }
+
+    #[test]
+    fn test_grep_invalid_regex() {
+        let dir = setup_search_dir();
+        let tool = GrepTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        // Unbalanced paren is an invalid regex: rg fails and the builtin
+        // fallback reports the invalid pattern.
+        let result = tool.execute(&serde_json::json!({"pattern": "("}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_glob_recursive_rs_files() {
+        let dir = setup_search_dir();
+        let tool = GlobTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "**/*.rs"}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("alpha.rs"));
+        assert!(result.output.contains("beta.rs"));
+        assert!(result.output.contains("nested/beta.rs"));
+        assert!(!result.output.contains("gamma.txt"));
+    }
+
+    #[test]
+    fn test_glob_no_matches() {
+        let dir = setup_search_dir();
+        let tool = GlobTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"pattern": "*.py"}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("No files matching"));
+    }
+
+    #[test]
+    fn test_glob_invalid_pattern() {
+        let dir = setup_search_dir();
+        let tool = GlobTool {
+            workspace_root: dir.path().to_path_buf(),
+        };
+
+        let result = tool.execute(&serde_json::json!({"pattern": "["}));
+        assert!(result.is_err());
+    }
+}

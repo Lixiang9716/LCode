@@ -206,4 +206,98 @@ mod tests {
         assert!(result.success);
         assert!(result.output.contains("hello"));
     }
+
+    #[test]
+    fn test_safety_check_dangerous_patterns() {
+        let tool = ShellTool {
+            workspace_root: PathBuf::from("/tmp"),
+            allowed_commands: vec![],
+            denied_commands: vec![],
+            timeout_secs: 120,
+        };
+
+        assert!(tool.check_safety("rm -rf /").is_err());
+        assert!(tool.check_safety("RM -RF /").is_err(), "case-insensitive");
+        assert!(tool.check_safety("dd if=/dev/zero of=/dev/sda").is_err());
+        assert!(tool.check_safety("mkfs.ext4 /dev/sdb1").is_err());
+        assert!(tool.check_safety("echo data > /dev/sda").is_err());
+        assert!(tool.check_safety(":(){ :|:& };:").is_err());
+        assert!(tool.check_safety("echo safe command").is_ok());
+        assert!(tool.check_safety("mkdir -p /tmp/foo").is_ok());
+    }
+
+    #[test]
+    fn test_safety_check_denied_commands() {
+        let tool = ShellTool {
+            workspace_root: PathBuf::from("/tmp"),
+            allowed_commands: vec![],
+            denied_commands: vec!["git push".into(), "curl".into()],
+            timeout_secs: 120,
+        };
+
+        assert!(tool.check_safety("git push origin main").is_err());
+        assert!(tool.check_safety("CURL -s https://example.com").is_err());
+        assert!(tool.check_safety("git status").is_ok());
+        assert!(tool.check_safety("echo hello").is_ok());
+    }
+
+    #[test]
+    fn test_command_with_stderr() {
+        let tool = ShellTool {
+            workspace_root: PathBuf::from("."),
+            allowed_commands: vec![],
+            denied_commands: vec![],
+            timeout_secs: 120,
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "echo warning >&2; echo out"}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("Command succeeded"));
+        assert!(result.output.contains("--- stdout ---"));
+        assert!(result.output.contains("out"));
+        assert!(result.output.contains("--- stderr ---"));
+        assert!(result.output.contains("warning"));
+    }
+
+    #[test]
+    fn test_command_failure_exit_code() {
+        let tool = ShellTool {
+            workspace_root: PathBuf::from("."),
+            allowed_commands: vec![],
+            denied_commands: vec![],
+            timeout_secs: 120,
+        };
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "echo oops >&2; exit 3"}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("Command failed"));
+        assert!(result.output.contains("exit code: 3"));
+        assert!(result.output.contains("oops"));
+    }
+
+    #[test]
+    fn test_execute_with_timeout_param() {
+        let tool = ShellTool {
+            workspace_root: PathBuf::from("."),
+            allowed_commands: vec![],
+            denied_commands: vec![],
+            timeout_secs: 120,
+        };
+
+        // timeout field must be parsed without error (and clamped to max 300).
+        let result = tool
+            .execute(&serde_json::json!({"command": "echo hi", "timeout": 5}))
+            .unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("hi"));
+
+        let result = tool
+            .execute(&serde_json::json!({"command": "echo hi", "timeout": 9999}))
+            .unwrap();
+        assert!(result.success);
+    }
 }
