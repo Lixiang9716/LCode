@@ -72,11 +72,26 @@ impl ConversationMemory {
         &self.messages
     }
 
-    /// Approximate token count of the conversation.
+    /// Approximate token count of the conversation (fast heuristic:
+    /// `chars / 4`; use [`Self::token_count`] for a real count).
     pub fn approximate_tokens(&self) -> usize {
         let system_tokens = self.system_prompt.len() / 4;
         let msg_tokens: usize = self.messages.iter().map(|m| m.content.len() / 4).sum();
         system_tokens + msg_tokens
+    }
+
+    /// Exact token count of the full context — system prompt plus all
+    /// message contents — using the cl100k_base BPE tokenizer (tiktoken).
+    ///
+    /// Slower than [`Self::approximate_tokens`] (requires locking the
+    /// tokenizer), so use the approximate path when only a threshold
+    /// comparison is needed.
+    pub fn token_count(&self) -> usize {
+        let mut total = exact_tokens(&self.system_prompt);
+        for msg in &self.messages {
+            total += exact_tokens(&msg.content);
+        }
+        total
     }
 
     /// Compact old messages if the context is getting too large.
@@ -104,4 +119,15 @@ impl ConversationMemory {
     pub fn clear(&mut self) {
         self.messages.clear();
     }
+}
+
+/// Exact token count of a text using the cl100k_base BPE tokenizer
+/// (the tokenizer GPT-4-class models use for counting).
+///
+/// `cl100k_base_singleton` lazily initializes the tokenizer once and
+/// caches it, so subsequent calls only pay for the encode itself.
+pub fn exact_tokens(text: &str) -> usize {
+    let bpe = tiktoken_rs::cl100k_base_singleton();
+    let tokens = bpe.lock().encode_ordinary(text).len();
+    tokens
 }
