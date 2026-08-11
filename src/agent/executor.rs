@@ -282,8 +282,8 @@ impl Executor {
             match self.runtime.await_approval(tool_call_id).await {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Rejected => {
-                    self.runtime
-                        .publish(AgentEvent::ToolCallDeclined { id: tool_call_id.to_string() });
+                    let declined = AgentEvent::ToolCallDeclined { id: tool_call_id.to_string() };
+                    self.runtime.publish(declined);
                     record_declined(memory, tool_name, tool_call_id);
                     return Ok(LoopControl::Continue);
                 }
