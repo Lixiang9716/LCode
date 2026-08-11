@@ -126,18 +126,22 @@ impl Default for ToolsConfig {
     }
 }
 
-// Default value functions (pub(super) so `config` module can use them in
-// merge/override logic; serde `default =` paths resolve within this module).
+// Default value functions. `pub(super)` so `config` module can use them in
+// merge/override logic; the ones re-exported for the test suite are
+// `#[doc(hidden)] pub`. serde `default =` paths resolve within this module.
 pub(super) fn default_provider() -> String {
     "anthropic".into()
 }
-pub(super) fn default_model() -> String {
+#[doc(hidden)]
+pub fn default_model() -> String {
     "claude-sonnet-4-20250514".into()
 }
-pub(super) fn default_max_tokens() -> u32 {
+#[doc(hidden)]
+pub fn default_max_tokens() -> u32 {
     8192
 }
-pub(super) fn default_temperature() -> f32 {
+#[doc(hidden)]
+pub fn default_temperature() -> f32 {
     0.3
 }
 pub(super) fn default_system_prompt() -> String {
@@ -146,48 +150,18 @@ pub(super) fn default_system_prompt() -> String {
      Be concise, accurate, and helpful."
         .into()
 }
-pub(super) fn default_max_turns() -> u32 {
+#[doc(hidden)]
+pub fn default_max_turns() -> u32 {
     100
 }
-pub(super) fn default_require_approval() -> bool {
+#[doc(hidden)]
+pub fn default_require_approval() -> bool {
     true
 }
-pub(super) fn default_context_size() -> usize {
+#[doc(hidden)]
+pub fn default_context_size() -> usize {
     128000
 }
 pub(super) fn default_true() -> bool {
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config_has_expected_values() {
-        let cfg = Config::default();
-
-        // LLM settings
-        assert_eq!(cfg.llm.provider, "anthropic");
-        assert_eq!(cfg.llm.model, "claude-sonnet-4-20250514");
-        assert_eq!(cfg.llm.max_tokens, 8192);
-        assert_eq!(cfg.llm.temperature, 0.3);
-        assert!(cfg.llm.api_key.is_empty());
-        assert!(cfg.llm.api_base.is_none());
-
-        // Agent settings
-        assert_eq!(cfg.agent.max_turns, 100);
-        assert!(cfg.agent.require_approval);
-        assert_eq!(cfg.agent.context_size, 128_000);
-        assert!(cfg.agent.system_prompt.contains("LCode"));
-
-        // Tool settings
-        assert!(cfg.tools.allowed_dirs.is_empty());
-        assert!(cfg.tools.allowed_commands.is_empty());
-        assert!(cfg.tools.denied_commands.iter().any(|c| c == "sudo"));
-        assert!(cfg.tools.denied_commands.iter().any(|c| c == "rm -rf /"));
-        assert!(cfg.tools.denied_commands.iter().any(|c| c == "chmod 777"));
-        assert!(cfg.tools.denied_commands.iter().any(|c| c == "mkfs"));
-        assert!(cfg.tools.enable_web);
-    }
 }
