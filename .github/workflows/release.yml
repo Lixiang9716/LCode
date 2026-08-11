@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # Automatically version-bump based on Conventional Commits:
+  #   feat:        -> minor bump (0.1.0 -> 0.2.0)
+  #   fix:         -> patch bump (0.1.0 -> 0.1.1)
+  #   BREAKING CHANGE: -> major bump (0.x -> 1.0.0)
+  #
+  # Creates a release PR that updates Cargo.toml version + CHANGELOG.md.
+  # Merging that PR creates the git tag and GitHub Release.
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-type: rust
+          package-name: lcode
+          # Keep 0.x versioning until 1.0: feat bumps minor, fix bumps patch
+          bump-minor-pre-major: true
+          include-v-in-tag: true
+          changelog-types: >
+            [{"type":"feat","section":"Features"},
+             {"type":"fix","section":"Bug Fixes"},
+             {"type":"perf","section":"Performance Improvements"},
+             {"type":"refactor","section":"Code Refactoring"},
+             {"type":"docs","section":"Documentation"},
+             {"type":"test","section":"Tests"},
+             {"type":"ci","section":"CI/CD"},
+             {"type":"chore","section":"Miscellaneous Chores"}]
+
+  # Build release binaries for all platforms and attach them to the
+  # GitHub Release. Only runs when release-please actually created a release.
+  build-assets:
+    name: Build assets (${{ matrix.target }})
+    needs: release-please
+    if: ${{ fromJson(needs.release-please.outputs.releases_created) }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: lcode-linux-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: lcode-linux-musl-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: lcode-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: lcode-macos-aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: lcode-windows-x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp lcode.exe ${{ matrix.artifact }}.exe
+            echo "artifact_path=target/${{ matrix.target }}/release/${{ matrix.artifact }}.exe" >> "$GITHUB_ENV"
+          else
+            tar -czf ${{ matrix.artifact }}.tar.gz lcode
+            echo "artifact_path=target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: ${{ env.artifact_path }}
+          generate_release_notes: true

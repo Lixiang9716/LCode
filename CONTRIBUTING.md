@@ -137,6 +137,22 @@ Use a descriptive prefix followed by a short summary of the work:
 Branch names should be lowercase, use hyphens to separate words, and be
 concise but descriptive.
 
+## Release Process
+
+Releases are automated via **release-please** (`.github/workflows/release.yml`):
+
+1. Every push to `main` is scanned for Conventional Commits
+2. Version bumps are derived from commit summaries:
+   - `feat:` → minor bump (e.g. `0.1.0` → `0.2.0`)
+   - `fix:` → patch bump (e.g. `0.1.0` → `0.1.1`)
+   - `BREAKING CHANGE:` footer → major bump (e.g. `0.x` → `1.0.0`)
+3. release-please opens a release PR updating `Cargo.toml` + `CHANGELOG.md`
+4. After the release PR is merged, a git tag and GitHub Release are created,
+   and prebuilt binaries for Linux/macOS/Windows are attached automatically
+
+**Important**: use Conventional Commits on every commit destined for `main`,
+or the version bump will be wrong (a `chore:` commit produces no release).
+
 ## Questions?
 
 If you have questions or need help, open an issue or reach out to the
