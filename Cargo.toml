@@ -31,7 +31,7 @@ anyhow = "1"
 thiserror = "2"
 
 # Interactive REPL
-rustyline = "15"
+rustyline = "18"
 
 # Logging & tracing
 tracing = "0.1"
