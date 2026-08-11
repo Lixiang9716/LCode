@@ -22,14 +22,7 @@
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-mod agent;
-mod app;
-mod cli;
-mod config;
-mod llm;
-mod repl;
-mod tools;
-mod utils;
+use lcode::{app, cli, config};
 
 /// Application entry point.
 ///
