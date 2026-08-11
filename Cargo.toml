@@ -31,14 +31,14 @@ anyhow = "1"
 thiserror = "2"
 
 # Interactive REPL
-rustyline = "18"
+rustyline = "15"
 
 # Logging & tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Configuration
-toml = "1.1"
+toml = "0.8"
 dirs = "6"
 
 # Async trait support
@@ -52,7 +52,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 # Token counting (approximate)
-tiktoken-rs = "0.12"
+tiktoken-rs = "0.6"
 
 # File system walker for search tools
 walkdir = "2"
@@ -67,8 +67,8 @@ regex-lite = "0.1"
 tempfile = "3"
 pretty_assertions = "1"
 tokio-test = "0.4"
-mockall = "0.13"
-rstest = "0.26"
+mockall = "0.15"
+rstest = "0.22"
 serial_test = "3"
 wiremock = "0.6"
 
