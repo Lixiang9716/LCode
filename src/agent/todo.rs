@@ -115,6 +115,11 @@ impl TodoManager {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// The full todo list (for session snapshots, #7).
+    pub fn items(&self) -> &[TodoItem] {
+        &self.items
+    }
 }
 
 /// Tool: `todo_update` — the model writes its plan through this tool.

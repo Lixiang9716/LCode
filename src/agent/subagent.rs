@@ -4,6 +4,10 @@
 //! subagent runs with a fresh `messages = [user(prompt)]` context (shared
 //! filesystem, same tool handlers, no `task` tool → no recursion), and
 //! only a text summary comes back as the tool result.
+//!
+//! Independent subtasks can be fanned out through `task_parallel` (#11):
+//! each `(label, prompt)` pair runs `run_subagent` in its own tokio task,
+//! and the results come back as `(label, summary)` pairs.
 
 use crate::llm::{ChatMessage, FinishReason};
 use crate::tools::{Tool, ToolResult};
@@ -59,6 +63,40 @@ pub async fn run_subagent(
 
     // No final answer within the turn budget.
     Ok("(no summary)".to_string())
+}
+
+/// Run several subagents in parallel (fan-out, #11).
+///
+/// Each `(label, prompt)` pair runs `run_subagent` in its own tokio task
+/// with a fresh context; results come back as `(label, summary)` pairs in
+/// input order. A subagent that errors surfaces its error text as the
+/// summary so one failure does not cancel its siblings.
+pub async fn run_subagents_parallel(
+    prompts: Vec<(String, String)>,
+    provider: Arc<dyn crate::llm::LlmProvider>,
+    registry: Arc<crate::tools::ToolRegistry>,
+    max_turns: u32,
+) -> Vec<(String, String)> {
+    let labels: Vec<String> = prompts.iter().map(|(label, _)| label.clone()).collect();
+    let handles: Vec<tokio::task::JoinHandle<anyhow::Result<String>>> = prompts
+        .into_iter()
+        .map(|(_label, prompt)| {
+            let provider = provider.clone();
+            let registry = registry.clone();
+            tokio::spawn(async move { run_subagent(&prompt, provider, &registry, max_turns).await })
+        })
+        .collect();
+
+    let mut results = Vec::with_capacity(handles.len());
+    for (handle, label) in handles.into_iter().zip(labels) {
+        let summary = match handle.await {
+            Ok(Ok(summary)) => summary,
+            Ok(Err(e)) => format!("(subagent failed: {e})"),
+            Err(e) => format!("(subagent task failed: {e})"),
+        };
+        results.push((label, summary));
+    }
+    results
 }
 
 /// Tool: `task` — delegate a subtask to a subagent (parent only).
@@ -124,5 +162,102 @@ pub fn register(
     provider: Arc<dyn crate::llm::LlmProvider>,
     registry_ref: Arc<crate::tools::ToolRegistry>,
 ) {
-    registry.register(Box::new(TaskTool { provider, registry: registry_ref }));
+    registry.register(Box::new(TaskTool {
+        provider: provider.clone(),
+        registry: registry_ref.clone(),
+    }));
+    registry.register(Box::new(TaskParallelTool { provider, registry: registry_ref }));
+}
+
+/// Tool: `task_parallel` — fan out independent subtasks to subagents that
+/// run concurrently (parent only, #11).
+pub struct TaskParallelTool {
+    pub provider: Arc<dyn crate::llm::LlmProvider>,
+    pub registry: Arc<crate::tools::ToolRegistry>,
+}
+
+impl Tool for TaskParallelTool {
+    fn name(&self) -> &str {
+        "task_parallel"
+    }
+
+    fn description(&self) -> &str {
+        "Delegate several independent subtasks to subagents that run in \
+         parallel. Each subtask is a {\"label\", \"prompt\"} pair; the \
+         result lists one \"[label] summary\" line per subtask. Use when \
+         subtasks do not depend on each other — do not use for a single \
+         task, and never use with subagents that touch the same files."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        let task = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "label": { "type": "string", "description": "Short name for the subtask" },
+                "prompt": { "type": "string", "description": "The subtask to delegate" }
+            },
+            "required": ["label", "prompt"]
+        });
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": task,
+                    "description": "Independent subtasks to run in parallel"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Maximum subagent turns (default: 30)"
+                }
+            },
+            "required": ["tasks"]
+        })
+    }
+
+    fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        let Some(tasks_val) = args.get("tasks") else {
+            return Err(anyhow::anyhow!("Missing 'tasks' argument"));
+        };
+        let tasks = parse_tasks(tasks_val)?;
+        let max_turns = args["max_turns"].as_u64().unwrap_or(MAX_SUBAGENT_TURNS as u64) as u32;
+
+        // Same synchronous-tool-over-async-engine pattern as `task`
+        // (block_on through the current runtime handle).
+        tokio::runtime::Handle::try_current()
+            .map_err(|_| anyhow::anyhow!("task_parallel tool requires a tokio runtime context"))?;
+        let results = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(run_subagents_parallel(
+                tasks,
+                self.provider.clone(),
+                self.registry.clone(),
+                max_turns,
+            ))
+        });
+        let output = if results.is_empty() {
+            "(no tasks)".to_string()
+        } else {
+            results
+                .iter()
+                .map(|(label, summary)| format!("[{label}] {summary}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(ToolResult::ok(output))
+    }
+}
+
+/// Parse the `tasks` array into `(label, prompt)` pairs.
+fn parse_tasks(value: &serde_json::Value) -> anyhow::Result<Vec<(String, String)>> {
+    let items = value.as_array().ok_or_else(|| anyhow::anyhow!("'tasks' must be an array"))?;
+    let mut tasks = Vec::with_capacity(items.len());
+    for item in items {
+        let label = item["label"].as_str().unwrap_or("task").to_string();
+        let prompt = item["prompt"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("each task needs a 'prompt' string"))?;
+        tasks.push((label, prompt.to_string()));
+    }
+    Ok(tasks)
 }

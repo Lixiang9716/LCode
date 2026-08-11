@@ -1,0 +1,65 @@
+{
+  "name": "lcode-vscode",
+  "displayName": "LCode - AI Code Agent",
+  "description": "Run LCode AI coding tasks and explain selected code directly from VS Code.",
+  "version": "0.1.0",
+  "publisher": "lcode",
+  "license": "MIT",
+  "engines": {
+    "vscode": ">=1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "lcode",
+    "ai",
+    "agent",
+    "coding-assistant"
+  ],
+  "activationEvents": [
+    "onCommand:lcode.runTask",
+    "onCommand:lcode.explainSelection"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lcode.runTask",
+        "title": "Run Task",
+        "category": "LCode"
+      },
+      {
+        "command": "lcode.explainSelection",
+        "title": "Explain Selection",
+        "category": "LCode"
+      }
+    ],
+    "configuration": {
+      "title": "LCode",
+      "properties": {
+        "lcode.path": {
+          "type": "string",
+          "default": "lcode",
+          "description": "Path to the lcode binary. Defaults to 'lcode' (expects it on PATH)."
+        },
+        "lcode.maxTurns": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "description": "Maximum agent turns per task (0 = unlimited). Passed as -n to the CLI."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -39,8 +39,20 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration
     let cfg = config::load()?;
 
-    // Run the application
-    app::run(args, cfg).await
+    // Run the application, racing it against Ctrl+C so an interrupt
+    // shuts the process down gracefully. In a full implementation the
+    // interrupt would publish `AgentEvent::TaskAborted` and send
+    // `AgentCommand::Abort` to the session runtime so in-flight work can
+    // drain; here returning `Ok` drops the tokio runtime, which cancels
+    // the agent tasks (including the spawned stdout renderer) — enough
+    // for the CLI.
+    tokio::select! {
+        result = app::run(args, cfg) => result,
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n👋 Received interrupt, shutting down gracefully...");
+            Ok(())
+        }
+    }
 }
 
 /// Set up structured logging with env-filter support.
