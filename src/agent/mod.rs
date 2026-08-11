@@ -1,29 +1,41 @@
 //! Agent module — the core of LCode.
 //!
-//! The agent orchestrates the conversation loop:
-//! 1. Send the user's task + conversation history to the LLM
-//! 2. Parse the response (text or tool calls)
-//! 3. Execute tool calls (with optional user approval)
-//! 4. Feed tool results back to the LLM
-//! 5. Repeat until the task is complete or max turns reached
+//! The agent is **event-driven**: a session publishes every observable
+//! step ([`AgentEvent`]) on the runtime's event bus, and control flows
+//! back through [`AgentCommand`] messages (tool approvals, abort).
+//! Observers (REPL, logging, tests, UIs) subscribe without coupling to
+//! the loop's internals.
+//!
+//! Architecture:
+//! 1. [`AgentRuntime`] owns the event bus (broadcast) and command channel
+//! 2. [`Executor`] runs the loop, publishing events and awaiting approvals
+//! 3. [`render`] provides the default stdout renderer used by single-shot
+//!    tasks; other subscribers can observe the same stream
 
 use crate::config::Config;
 use crate::llm::LlmProvider;
 use crate::tools::ToolRegistry;
 
+mod event;
 mod executor;
 mod memory;
 mod planner;
+mod render;
+mod runtime;
 
+pub use event::{AgentCommand, AgentEvent};
 pub use executor::Executor;
 pub use memory::ConversationMemory;
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
+pub use render::render_event;
+pub use runtime::{AgentRuntime, ApprovalDecision};
 
 /// Run a single-shot agent task.
 ///
-/// This is the main entry point for non-interactive task execution.
-/// It creates a fresh agent session, plans the task, and executes it
-/// turn by turn until completion or max_turns is reached.
+/// Creates a fresh agent session bound to a new runtime, spawns the
+/// default stdout renderer (which also answers approval prompts via
+/// stdin), and executes the task turn by turn until completion or
+/// `max_turns` is reached.
 pub async fn run_task(
     task: &str,
     max_turns: u32,
@@ -36,14 +48,23 @@ pub async fn run_task(
     // Build the tool registry
     let registry = ToolRegistry::new(config)?;
 
+    // Create the runtime with event bus + command channel
+    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+
+    // Spawn the default renderer (stdout + stdin approval prompts)
+    let renderer = render::spawn_renderer(events_rx, commands_tx);
+
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(provider, registry, auto_approve);
+    let mut executor = Executor::new(provider, registry, auto_approve, runtime);
 
     // Start the task
     tracing::info!("Starting task: {}", task);
     executor.run(task, &planner, memory, max_turns).await?;
+
+    // Wait for the renderer to drain the remaining events
+    let _ = renderer.await;
 
     Ok(())
 }
