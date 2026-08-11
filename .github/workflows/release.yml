@@ -31,15 +31,7 @@ jobs:
           # Keep 0.x versioning until 1.0: feat bumps minor, fix bumps patch
           bump-minor-pre-major: true
           include-v-in-tag: true
-          changelog-types: >
-            [{"type":"feat","section":"Features"},
-             {"type":"fix","section":"Bug Fixes"},
-             {"type":"perf","section":"Performance Improvements"},
-             {"type":"refactor","section":"Code Refactoring"},
-             {"type":"docs","section":"Documentation"},
-             {"type":"test","section":"Tests"},
-             {"type":"ci","section":"CI/CD"},
-             {"type":"chore","section":"Miscellaneous Chores"}]
+          changelog-types: '[{"type":"feat","section":"Features"},{"type":"fix","section":"Bug Fixes"},{"type":"perf","section":"Performance Improvements"},{"type":"refactor","section":"Code Refactoring"},{"type":"docs","section":"Documentation"},{"type":"test","section":"Tests"},{"type":"ci","section":"CI/CD"},{"type":"chore","section":"Miscellaneous Chores"}]'
 
   # Build release binaries for all platforms and attach them to the
   # GitHub Release. Only runs when release-please actually created a release.
