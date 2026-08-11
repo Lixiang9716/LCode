@@ -120,37 +120,37 @@ fn provider_for(server: &MockServer) -> OpenAiProvider {
 /// Mock OpenAI response containing two `tool_calls`.
 fn tool_calls_response() -> serde_json::Value {
     serde_json::json!({
-    "choices": [{
-        "message": {
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [
-                {
-                    "id": "call_abc123",
-                    "type": "function",
-                    "function": {
-                        "name": "read_file",
-                        "arguments": "{\"path\": \"src/main.rs\", \"limit\": 10}"
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    {
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\": \"src/main.rs\", \"limit\": 10}"
+                        }
+                    },
+                    {
+                        "id": "call_def456",
+                        "type": "function",
+                        "function": {
+                            "name": "grep",
+                            "arguments": "{\"pattern\": \"pub fn\"}"
+                        }
                     }
-                },
-                {
-                    "id": "call_def456",
-                    "type": "function",
-                    "function": {
-                        "name": "grep",
-                        "arguments": "{\"pattern\": \"pub fn\"}"
-                    }
-                }
-            ]
-        },
-        "finish_reason": "tool_calls"
-    }],
-    "usage": {
-        "prompt_tokens": 20,
-        "completion_tokens": 12,
-        "total_tokens": 32
-    }
-})
+                ]
+            },
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 12,
+            "total_tokens": 32
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
