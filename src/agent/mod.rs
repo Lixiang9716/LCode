@@ -67,7 +67,7 @@ pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use skill::{LoadSkillTool, Skill, SkillRegistry};
-pub use subagent::{run_subagent, TaskTool};
+pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
 pub use team::{
     MessageBus, TeamMessage, Teammate, TeammateManager, TeammateState, VALID_MSG_TYPES,
