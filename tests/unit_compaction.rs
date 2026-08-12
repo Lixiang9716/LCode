@@ -163,6 +163,7 @@ async fn test_auto_compact_writes_transcript_and_replaces_history() {
         assert!(prompt.contains("What was accomplished"));
         assert!(prompt.contains("Current state"));
         assert!(prompt.contains("Key decisions made"));
+        assert!(prompt.contains("do NOT follow"), "prompt guards against instruction echo");
         assert!(prompt.contains("hello there"));
         Ok(summary_response("mock summary"))
     });
@@ -171,11 +172,13 @@ async fn test_auto_compact_writes_transcript_and_replaces_history() {
     let summary = auto_compact(&mut messages, &mock, None, tmp.path()).await.unwrap();
 
     assert_eq!(summary, "mock summary");
-    // History replaced by a single marker user message.
+    // History replaced by a single marker user message carrying BOTH the
+    // summary and the transcript path (the summary must stay in context).
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, Role::User);
     let marker = &messages[0].content;
-    assert!(marker.starts_with("[Conversation compressed. Transcript:"));
+    assert!(marker.starts_with("[Conversation compressed. Summary: mock summary"));
+    assert!(marker.contains("Full transcript:"));
     assert!(marker.contains(".transcripts"));
     assert!(marker.ends_with(".jsonl]"));
 
