@@ -44,10 +44,13 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Map the current platform to the release asset name it should download.
+///
+/// Asset names match `.github/workflows/release.yml` (5 original +
+/// linux aarch64 gnu/musl since v0.7.0).
 pub fn asset_name_for_platform() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => Some("lcode-linux-x86_64.tar.gz"),
-        ("linux", "aarch64") => Some("lcode-linux-musl-x86_64.tar.gz"), // fallback placeholder
+        ("linux", "aarch64") => Some("lcode-linux-aarch64.tar.gz"),
         ("macos", "x86_64") => Some("lcode-macos-x86_64.tar.gz"),
         ("macos", "aarch64") => Some("lcode-macos-aarch64.tar.gz"),
         ("windows", "x86_64") => Some("lcode-windows-x86_64.exe"),
