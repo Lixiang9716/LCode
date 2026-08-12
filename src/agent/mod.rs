@@ -42,6 +42,7 @@ mod retry;
 mod runtime;
 mod session;
 mod skill;
+mod stream;
 mod subagent;
 mod task;
 mod team;
@@ -57,7 +58,7 @@ pub use compaction::{
 };
 pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
 pub use event::{AgentCommand, AgentEvent};
-pub use executor::Executor;
+pub use executor::{Executor, SessionState};
 pub use hooks::{
     deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
 };
@@ -136,8 +137,9 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor =
-        Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks, cron, mcp_registry);
+    let session =
+        crate::agent::executor::SessionState { todo, background, hooks, cron, mcp: mcp_registry };
+    let mut executor = Executor::new(provider, registry, auto_approve, runtime, session);
 
     // Start the task
     tracing::info!("Starting task: {}", task);

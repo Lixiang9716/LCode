@@ -19,9 +19,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-// ---------------------------------------------------------------------------
 // Executor: the agent loop
-// ---------------------------------------------------------------------------
 
 /// Build a `write_file` tool call with the given id and arguments.
 fn write_file_call(id: &str, args: &str) -> ToolCallRequest {
@@ -76,11 +74,13 @@ fn executor_with_queue(
             registry,
             true,
             runtime,
-            Arc::new(Mutex::new(TodoManager::default())),
-            Arc::new(BackgroundManager::default()),
-            Arc::new(lcode::agent::HookRegistry::default()),
-            Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
-            cron,
+            lcode::agent::SessionState {
+                todo: Arc::new(Mutex::new(TodoManager::default())),
+                background: Arc::new(BackgroundManager::default()),
+                hooks: Arc::new(lcode::agent::HookRegistry::default()),
+                cron,
+                mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+            },
         ),
         call_count,
         events_rx,
@@ -259,9 +259,7 @@ async fn test_max_turns_truncates_never_finishing_loop() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ConversationMemory: message management and compaction
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_memory_add_messages() {
@@ -352,9 +350,7 @@ fn test_compact_if_needed_keeps_small_conversations() {
     assert_eq!(mem.messages().len(), 4);
 }
 
-// ---------------------------------------------------------------------------
 // Planner: plan creation, progress, and dependency ordering
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_simple_plan() {

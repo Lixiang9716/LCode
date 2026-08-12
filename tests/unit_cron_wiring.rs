@@ -36,10 +36,13 @@ fn executor_with_cron(
             ToolRegistry::new(&Config::default()).expect("build tool registry"),
             true,
             runtime,
-            Arc::new(Mutex::new(TodoManager::default())),
-            Arc::new(BackgroundManager::default()),
-            Arc::new(lcode::agent::HookRegistry::default()),
-            cron,
+            lcode::agent::SessionState {
+                todo: Arc::new(Mutex::new(TodoManager::default())),
+                background: Arc::new(BackgroundManager::default()),
+                hooks: Arc::new(lcode::agent::HookRegistry::default()),
+                cron,
+                mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+            },
         ),
         events_rx,
     )

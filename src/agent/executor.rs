@@ -12,9 +12,8 @@ use crate::agent::{
     BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
     HookRegistry, McpRegistry, Planner, TodoManager,
 };
-use crate::llm::{ChatMessage, FinishReason, LlmProvider, StreamEvent, ToolDefinition, Usage};
+use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
 use crate::tools::{ToolRegistry, ToolResult};
-use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
@@ -30,6 +29,16 @@ enum LoopControl {
 /// Number of turns without a todo update before a nag is injected.
 const TODO_NAG_AFTER_TURNS: u32 = 3;
 
+/// Session-scoped state shared between the executor and the session
+/// tools (todo/skill/task/background/team/worktree/cron/mcp).
+pub struct SessionState {
+    pub todo: Arc<Mutex<TodoManager>>,
+    pub background: Arc<BackgroundManager>,
+    pub hooks: Arc<HookRegistry>,
+    pub cron: Arc<Mutex<CronScheduler>>,
+    pub mcp: Arc<Mutex<McpRegistry>>,
+}
+
 /// The executor drives the agent loop.
 ///
 /// Owns the LLM provider, tool registry, runtime, and the session-scoped
@@ -37,10 +46,10 @@ const TODO_NAG_AFTER_TURNS: u32 = 3;
 /// turn-start notification draining) so it can be constructed with mocks
 /// in tests.
 pub struct Executor {
-    provider: Box<dyn LlmProvider>,
+    pub(crate) provider: Box<dyn LlmProvider>,
     registry: ToolRegistry,
     auto_approve: bool,
-    runtime: AgentRuntime,
+    pub(crate) runtime: AgentRuntime,
     todo: Arc<Mutex<TodoManager>>,
     background: Arc<BackgroundManager>,
     hooks: Arc<HookRegistry>,
@@ -57,13 +66,19 @@ impl Executor {
         registry: ToolRegistry,
         auto_approve: bool,
         runtime: AgentRuntime,
-        todo: Arc<Mutex<TodoManager>>,
-        background: Arc<BackgroundManager>,
-        hooks: Arc<HookRegistry>,
-        cron: Arc<Mutex<CronScheduler>>,
-        mcp: Arc<Mutex<McpRegistry>>,
+        session: SessionState,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime, todo, background, hooks, cron, mcp }
+        Self {
+            provider,
+            registry,
+            auto_approve,
+            runtime,
+            todo: session.todo,
+            background: session.background,
+            hooks: session.hooks,
+            cron: session.cron,
+            mcp: session.mcp,
+        }
     }
 
     /// Run the agent loop for a given task.
@@ -211,62 +226,6 @@ impl Executor {
 
     /// Ask the LLM for a response: streamed when `stream` is set, plain
     /// chat otherwise.
-    async fn call_llm(
-        &self,
-        context: &[ChatMessage],
-        tool_defs: &[ToolDefinition],
-        stream: bool,
-    ) -> anyhow::Result<crate::llm::LlmResponse> {
-        if stream {
-            self.chat_stream(context, tool_defs).await
-        } else {
-            self.provider.chat(context, tool_defs).await
-        }
-    }
-
-    /// Stream a chat completion, publishing every `TextDelta` as its own
-    /// [`AgentEvent::TextGenerated`] so observers (REPL, tests) see the
-    /// typewriter effect, then reassemble the full [`LlmResponse`] from
-    /// the accumulated text and the `Done` finish reason.
-    ///
-    /// Streams never carry tool calls, so when the model finishes with
-    /// `ToolCalls` we fall back to a single `chat()` call to fetch the
-    /// full response including the tool-call arguments (a dual call that
-    /// keeps tool calling fully functional). Providers without native
-    /// streaming already fall back to `chat()` inside `chat_stream`, so
-    /// this path works for every backend.
-    async fn chat_stream(
-        &self,
-        context: &[ChatMessage],
-        tool_defs: &[ToolDefinition],
-    ) -> anyhow::Result<crate::llm::LlmResponse> {
-        let mut stream = self.provider.chat_stream(context, tool_defs).await?;
-        let mut content = String::new();
-        let mut finish_reason = FinishReason::Unknown;
-        while let Some(event) = stream.next().await {
-            match event? {
-                StreamEvent::TextDelta(delta) => {
-                    publish_delta(&self.runtime, &mut content, delta);
-                }
-                StreamEvent::Done(reason) => finish_reason = reason,
-            }
-        }
-        if finish_reason == FinishReason::ToolCalls {
-            // Streams never carry tool calls: fall back to a plain chat
-            // call for the full response (tool calls included). The
-            // fallback's text is not published again — the streamed
-            // preview already showed it — but memory still gets the
-            // authoritative content via handle_response.
-            return self.provider.chat(context, tool_defs).await;
-        }
-        Ok(crate::llm::LlmResponse {
-            content,
-            tool_calls: None,
-            usage: Usage::default(),
-            finish_reason,
-        })
-    }
-
     /// Publish a nag event when the model has not updated its todos for
     /// several turns; the renderer surfaces it to the user (s03).
     fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {
@@ -468,13 +427,6 @@ fn publish_text_unless(runtime: &AgentRuntime, content: &str, already_published:
     if !already_published {
         publish_text(runtime, content);
     }
-}
-
-/// Publish a single streamed text delta as a [`AgentEvent::TextGenerated`]
-/// event (typewriter effect) and accumulate it into `content`.
-fn publish_delta(runtime: &AgentRuntime, content: &mut String, delta: String) {
-    content.push_str(&delta);
-    runtime.publish(AgentEvent::TextGenerated { content: delta });
 }
 
 /// Publish a task-abort event and mark the session as aborted.
