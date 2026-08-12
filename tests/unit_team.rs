@@ -83,9 +83,9 @@ fn roster_persists_across_instances() {
     let ws = tmp.path().to_path_buf();
 
     let mut manager = TeammateManager::new(&ws);
-    let alice = manager.spawn("alice", "coder").unwrap();
+    let alice = manager.spawn("alice", "coder", None).unwrap();
     assert_eq!(alice.state, TeammateState::Working);
-    manager.spawn("bob", "reviewer").unwrap();
+    manager.spawn("bob", "reviewer", None).unwrap();
 
     // A fresh manager reloads the roster from .team/config.json.
     let reloaded = TeammateManager::new(&ws);
@@ -101,8 +101,8 @@ fn spawn_rejects_busy_and_reuses_idle() {
     let ws = tmp.path().to_path_buf();
 
     let mut manager = TeammateManager::new(&ws);
-    manager.spawn("alice", "coder").unwrap();
-    let err = manager.spawn("alice", "coder").unwrap_err();
+    manager.spawn("alice", "coder", None).unwrap();
+    let err = manager.spawn("alice", "coder", None).unwrap_err();
     assert!(err.to_string().contains("currently"));
 
     // Simulate the loop persisting an idle state, then spawn reuses it.
@@ -114,7 +114,7 @@ fn spawn_rejects_busy_and_reuses_idle() {
     std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let mut manager = TeammateManager::new(&ws);
-    let reused = manager.spawn("alice", "coder").unwrap();
+    let reused = manager.spawn("alice", "coder", None).unwrap();
     assert_eq!(reused.state, TeammateState::Working);
     assert!(manager.roster().contains("alice (coder): working"));
 }
@@ -123,7 +123,7 @@ fn spawn_rejects_busy_and_reuses_idle() {
 fn spawn_requires_name() {
     let tmp = tempdir().unwrap();
     let mut manager = TeammateManager::new(&tmp.path().to_path_buf());
-    assert!(manager.spawn("", "coder").is_err());
+    assert!(manager.spawn("", "coder", None).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ async fn teammate_loop_answers_shutdown_request() {
     bus.send(&msg("lead", "alice", "shutdown_request", Some("req-1"), "please stop")).unwrap();
 
     let mut manager = TeammateManager::new(&ws);
-    manager.spawn("alice", "coder").unwrap();
+    manager.spawn("alice", "coder", None).unwrap();
 
     let reply = wait_for_reply(&bus, std::time::Duration::from_secs(5), "shutdown_response").await;
     assert_eq!(reply.from, "alice");
@@ -194,7 +194,7 @@ async fn teammate_loop_echoes_messages_and_runs_mini_tools() {
     bus.send(&msg("lead", "alice", "request", Some("r1"), &cmd.to_string())).unwrap();
 
     let mut manager = TeammateManager::new(&ws);
-    manager.spawn("alice", "coder").unwrap();
+    manager.spawn("alice", "coder", None).unwrap();
 
     let reply = wait_for_reply(&bus, std::time::Duration::from_secs(5), "response").await;
     assert_eq!(reply.from, "alice");
@@ -217,7 +217,7 @@ async fn teammate_loop_echoes_plain_text() {
     bus.send(&msg("lead", "alice", "text", None, "what is the weather?")).unwrap();
 
     let mut manager = TeammateManager::new(&ws);
-    manager.spawn("alice", "coder").unwrap();
+    manager.spawn("alice", "coder", None).unwrap();
 
     let reply = wait_for_reply(&bus, std::time::Duration::from_secs(5), "response").await;
     assert_eq!(reply.content, "[alice] what is the weather?");

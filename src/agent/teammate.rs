@@ -153,6 +153,9 @@ impl TeammateTools {
             manager: self.manager.clone(),
             bus: self.bus.clone(),
             protocol: self.protocol.clone(),
+            // The teammate loop drives its own env; the send path only
+            // needs the bus.
+            env: None,
         };
         match name {
             "bash" => {

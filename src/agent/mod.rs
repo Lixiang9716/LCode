@@ -320,6 +320,11 @@ async fn execute_session(
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
     executor.run(task, &planner, memory, max_turns, stream).await?;
 
+    // The executor owns the event-bus sender (via its runtime). Drop it
+    // before awaiting the renderer, or the renderer never observes the
+    // channel close and the process hangs after the task completes.
+    drop(executor);
+
     let _ = renderer.await;
     Ok(())
 }

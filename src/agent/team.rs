@@ -187,9 +187,6 @@ pub struct TeammateManager {
     team_dir: PathBuf,
     /// Runtime event bus publisher (skipped while `None`).
     events: Option<broadcast::Sender<AgentEvent>>,
-    /// Runtime environment passed to spawned loops (LLM provider, bus,
-    /// protocol, task board); `None` falls back to the basic no-LLM loop.
-    env: Option<TeammateEnv>,
 }
 impl TeammateManager {
     /// Create a manager rooted at `workspace/.team` (roster loaded from
@@ -202,11 +199,6 @@ impl TeammateManager {
     /// Attach the runtime event bus (skipped while `None`).
     pub fn set_events(&mut self, events: broadcast::Sender<AgentEvent>) {
         self.events = Some(events);
-    }
-    /// Attach the teammate runtime environment (provider, bus, protocol,
-    /// task board) so spawned loops run real agent loops.
-    pub fn set_env(&mut self, env: TeammateEnv) {
-        self.env = Some(env);
     }
     fn config_path(&self) -> Option<PathBuf> {
         (!self.team_dir.as_os_str().is_empty()).then(|| self.team_dir.join("config.json"))
@@ -237,11 +229,15 @@ impl TeammateManager {
             let _ = tx.send(event);
         }
     }
-    /// Spawn (or reuse an idle) teammate with the given role. Registers
-    /// the member in `.team/config.json` and starts [`run_teammate_loop`]
-    /// as a tokio task (dropped with the runtime, mirroring s15 daemon
-    /// threads) when a tokio runtime exists.
-    pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
+    /// Spawn (or reuse an idle) teammate with the given role; starts
+    /// [`run_teammate_loop`] as a tokio task. `env` comes from the
+    /// caller; the manager never owns it, so no cycle forms.
+    pub fn spawn(
+        &mut self,
+        name: &str,
+        role: &str,
+        env: Option<&TeammateEnv>,
+    ) -> anyhow::Result<Teammate> {
         if name.is_empty() {
             anyhow::bail!("Teammate name must not be empty");
         }
@@ -260,7 +256,7 @@ impl TeammateManager {
             state: member.state.as_str().to_string(),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let env = match &self.env {
+            let env = match env {
                 Some(env) => env.clone(),
                 None => TeammateEnv::basic(&self.team_dir),
             };
@@ -284,7 +280,7 @@ impl TeammateManager {
         lines.join("\n")
     }
 }
-/// Persist one member's state to config.json (runs outside the manager lock).
+/// Persist one member's state to config.json (outside the manager lock).
 pub(crate) fn set_member_state(team_dir: &PathBuf, name: &str, state: TeammateState) {
     let path = team_dir.join("config.json");
     let mut config = std::fs::read_to_string(&path)
@@ -316,6 +312,8 @@ pub struct TeamTool {
     pub manager: Arc<Mutex<TeammateManager>>,
     pub bus: Arc<MessageBus>,
     pub protocol: Arc<ProtocolManager>,
+    /// Runtime env for spawned loops (tool-owned, breaks the cycle).
+    pub env: Option<TeammateEnv>,
 }
 /// Which team tool an instance of [`TeamTool`] implements.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -390,7 +388,7 @@ impl TeamTool {
             Ok(m) => m,
             Err(_) => return Ok(ToolResult::err("team manager lock poisoned")),
         };
-        let spawned = match manager.spawn(name, role) {
+        let spawned = match manager.spawn(name, role, self.env.as_ref()) {
             Ok(member) => member,
             Err(e) => return Ok(ToolResult::err(e.to_string())),
         };
@@ -470,29 +468,32 @@ pub fn register(
         if let Some(tx) = &events {
             guard.set_events(tx.clone());
         }
-        guard.set_env(TeammateEnv {
-            team_dir: workspace.join(".team"),
-            bus: bus.clone(),
-            provider: Some(provider),
-            protocol: protocol.clone(),
-            tasks: tasks.clone(),
-            tools: TeammateTools::new(
-                workspace,
-                manager.clone(),
-                bus.clone(),
-                protocol.clone(),
-                tasks.clone(),
-            ),
-            idle_interval: TEAMMATE_IDLE_INTERVAL,
-            idle_polls: TEAMMATE_IDLE_POLLS,
-        });
     }
+    // Owned by the tools, not the manager (they hold a strong `Arc` of
+    // it); the cycle would leak the event-bus sender past session end.
+    let env = TeammateEnv {
+        team_dir: workspace.join(".team"),
+        bus: bus.clone(),
+        provider: Some(provider),
+        protocol: protocol.clone(),
+        tasks: tasks.clone(),
+        tools: TeammateTools::new(
+            workspace,
+            manager.clone(),
+            bus.clone(),
+            protocol.clone(),
+            tasks.clone(),
+        ),
+        idle_interval: TEAMMATE_IDLE_INTERVAL,
+        idle_polls: TEAMMATE_IDLE_POLLS,
+    };
     for kind in [TeamToolKind::Spawn, TeamToolKind::Send, TeamToolKind::Read, TeamToolKind::List] {
         registry.register(Box::new(TeamTool {
             kind,
             manager: manager.clone(),
             bus: bus.clone(),
             protocol: protocol.clone(),
+            env: Some(env.clone()),
         }));
     }
     register_protocol_tools(registry, bus, protocol);
