@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/Lixiang9716/LCode/compare/v0.5.0...v0.6.0) (2026-08-12)
+
+
+### Features
+
+* **agent:** wire cron ticks and streaming consumption into executor ([2282f75](https://github.com/Lixiang9716/LCode/commit/2282f7570d7a549fcb6f5f9e69cb6aa6e6daafc9))
+* **agent:** wire MCP tools into the dynamic per-turn tool pool (s19) ([b806385](https://github.com/Lixiang9716/LCode/commit/b8063852e6c4e9cf56f2d3f5fd4ec10195a0be71))
+* wire cron ticks, streaming, lcode serve and session CLI into the loop ([2cb3812](https://github.com/Lixiang9716/LCode/commit/2cb3812e29f9d81cfcd2d1c87cfb72df4bcb230c))
+* wire MCP tools into dynamic per-turn tool pool (s19) ([5ca4087](https://github.com/Lixiang9716/LCode/commit/5ca40872bc56d827390a2458ce7f20dd90f68ac0))
+
 ## [0.5.0](https://github.com/Lixiang9716/LCode/compare/v0.4.0...v0.5.0) (2026-08-11)
 
 
