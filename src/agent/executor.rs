@@ -7,12 +7,13 @@
 //! event stream.
 
 use crate::agent::event::AgentEvent;
+use crate::agent::prompt;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
     BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
     HookRegistry, McpRegistry, Planner, TodoManager,
 };
-use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
+use crate::llm::{FinishReason, LlmProvider};
 use crate::tools::{ToolRegistry, ToolResult};
 use std::sync::{Arc, Mutex};
 
@@ -27,7 +28,7 @@ enum LoopControl {
 }
 
 /// Number of turns without a todo update before a nag is injected.
-const TODO_NAG_AFTER_TURNS: u32 = 3;
+pub(crate) const TODO_NAG_AFTER_TURNS: u32 = 3;
 
 /// Session-scoped state shared between the executor and the session
 /// tools (todo/skill/task/background/team/worktree/cron/mcp).
@@ -37,6 +38,9 @@ pub struct SessionState {
     pub hooks: Arc<HookRegistry>,
     pub cron: Arc<Mutex<CronScheduler>>,
     pub mcp: Arc<Mutex<McpRegistry>>,
+    /// Compact-request channel written by the `compact` tool, read by
+    /// the executor at the next turn boundary (s06 manual layer).
+    pub compact_request: Arc<Mutex<Option<String>>>,
 }
 
 /// The executor drives the agent loop.
@@ -47,16 +51,17 @@ pub struct SessionState {
 /// in tests.
 pub struct Executor {
     pub(crate) provider: Box<dyn LlmProvider>,
-    registry: ToolRegistry,
+    pub(crate) registry: ToolRegistry,
     auto_approve: bool,
     pub(crate) runtime: AgentRuntime,
-    todo: Arc<Mutex<TodoManager>>,
-    background: Arc<BackgroundManager>,
-    hooks: Arc<HookRegistry>,
+    pub(crate) todo: Arc<Mutex<TodoManager>>,
+    pub(crate) background: Arc<BackgroundManager>,
+    pub(crate) hooks: Arc<HookRegistry>,
     /// Shared cron scheduler: the cron tools manage jobs, the executor
     /// fires due ones by injecting them into the conversation (s14).
-    cron: Arc<Mutex<CronScheduler>>,
-    mcp: Arc<Mutex<McpRegistry>>,
+    pub(crate) cron: Arc<Mutex<CronScheduler>>,
+    pub(crate) mcp: Arc<Mutex<McpRegistry>>,
+    pub(crate) compact_request: Arc<Mutex<Option<String>>>,
 }
 
 impl Executor {
@@ -78,6 +83,7 @@ impl Executor {
             hooks: session.hooks,
             cron: session.cron,
             mcp: session.mcp,
+            compact_request: session.compact_request,
         }
     }
 
@@ -100,80 +106,26 @@ impl Executor {
         max_turns: u32,
         stream: bool,
     ) -> anyhow::Result<ConversationMemory> {
-        // The planner output is currently informational; keep the binding
-        // explicit for future use.
-        let _plan = planner.create_plan(task);
-        memory.add_user(format!("Task: {}", task));
-
-        let mut turn = 0u32;
+        // Session initialization: plan echo (G6), UserPromptSubmit hook
+        // (G8) and system prompt assembly (G7).
+        if self.initialize_session(task, planner, &mut memory)? {
+            return Ok(memory);
+        }
 
         self.runtime.publish(AgentEvent::SessionStarted { task: task.to_string() });
 
-        let mut aborted = false;
-        loop {
-            if turn >= max_turns {
-                self.runtime.publish(AgentEvent::TaskAborted {
-                    reason: format!("Reached maximum turns ({})", max_turns),
-                });
-                aborted = true;
-                break;
-            }
-
-            turn += 1;
-            // Record the turn so the todo manager can measure how many
-            // turns have passed since the model last updated its plan
-            // (s03 nag).
-            self.todo.lock().unwrap().note_turn(turn);
-            self.runtime.publish(AgentEvent::TurnStarted { turn });
-            tracing::debug!(turn, "Agent turn");
-
-            // Turn-start injection: drain background-task notifications
-            // into the conversation (s08: results arrive before the next
-            // LLM call, no polling needed).
-            self.inject_background_results(&mut memory);
-
-            // Turn-start injection: fire due cron jobs into the
-            // conversation (s14: pull-based, checked when the agent is
-            // idle so a one-shot agent still honors schedules).
-            self.inject_cron_triggers(&mut memory);
-
-            // Assemble the tool pool per turn: built-ins + connected MCP
-            // tools (s19 — dynamic pool, `connect_mcp` takes effect on
-            // the next turn).
-            let tool_defs = self.tool_pool();
-
-            // Get the current conversation context
-            let context = memory.get_context();
-
-            // Send to LLM: stream deltas for a typewriter effect when
-            // `stream` is set, otherwise the plain chat call.
-            let response = self.call_llm(&context, &tool_defs, stream).await?;
-
-            // In streaming mode the text was already published
-            // delta-by-delta (or as a streamed preview before a tool-call
-            // fallback), so handle_response must not re-publish it as a
-            // single block.
-            let finished = match self.handle_response(response, &mut memory, stream).await? {
-                LoopControl::Stop => true,
-                LoopControl::Abort => {
-                    abort_session(&self.runtime, &mut aborted);
-                    break;
-                }
-                LoopControl::Continue => false,
-            };
-
-            self.runtime.publish(AgentEvent::TurnFinished { turn });
-
-            // Turn-end nag: remind the model to update its plan when it
-            // has not touched the todo list for several turns (s03).
-            self.maybe_nag_todo(&mut memory);
-
-            if finished {
-                break;
-            }
-        }
+        let (aborted, turn) = self.run_loop(&mut memory, max_turns, stream).await?;
 
         if !aborted {
+            // G8: Stop hook (policy/observation at session end)
+            let stop_ctx = HookContext {
+                point: HookPoint::Stop,
+                tool_name: None,
+                tool_args: None,
+                prompt: None,
+            };
+            self.hooks.run(&stop_ctx);
+
             let summary = response_usage_summary(&memory);
             self.runtime.publish(AgentEvent::TaskFinished {
                 turns: turn,
@@ -187,57 +139,101 @@ impl Executor {
 
     /// Assemble the per-turn tool pool: built-in tools plus connected MCP
     /// tools (namespaced `mcp__{server}__{tool}`, s19).
-    fn tool_pool(&self) -> Vec<ToolDefinition> {
-        let mut defs = self.registry.definitions();
-        if let Ok(mcp) = self.mcp.lock() {
-            defs.extend(mcp.tool_definitions());
+    /// Initialize a session: run the UserPromptSubmit hook, inject the
+    /// plan echo, and assemble the system prompt from sections.
+    ///
+    /// Returns `true` when the session was blocked by the hook.
+    fn initialize_session(
+        &mut self,
+        task: &str,
+        planner: &Planner,
+        memory: &mut ConversationMemory,
+    ) -> anyhow::Result<bool> {
+        // G6: plan echo — the model sees the (model-owned) plan.
+        let plan = planner.create_plan(task);
+        let plan_text = plan.render();
+
+        // G8: UserPromptSubmit hook gates the user's prompt.
+        let prompt_ctx = HookContext {
+            point: HookPoint::UserPromptSubmit,
+            tool_name: None,
+            tool_args: None,
+            prompt: Some(task.to_string()),
+        };
+        if let HookDecision::Block { reason } = self.hooks.run(&prompt_ctx) {
+            self.runtime
+                .publish(AgentEvent::Error { message: format!("Prompt blocked: {}", reason) });
+            return Ok(true);
         }
-        defs
+
+        memory.add_user(format!("Task: {}\n\n<plan>\n{}\n</plan>", task, plan_text));
+
+        // G7: assemble the system prompt from sections (s10) — base
+        // identity + workspace + tool names; skills/memory sections are
+        // appended by their owners (s05/s09).
+        let tool_names: Vec<String> =
+            self.registry.definitions().iter().map(|t| t.function.name.clone()).collect();
+        let workspace = std::env::current_dir().unwrap_or_default();
+        let sections =
+            prompt::session_sections(memory.system_prompt(), &workspace, &tool_names, "", None);
+        memory.set_system_prompt(prompt::assemble(&sections));
+
+        Ok(false)
     }
 
-    /// Drain completed background-task notifications into the conversation
-    /// before the LLM call (s08 turn-start injection).
-    fn inject_background_results(&self, memory: &mut ConversationMemory) {
-        let notifications = self.background.drain_notifications();
-        if notifications.is_empty() {
-            return;
-        }
-        let body = notifications.join("\n");
-        memory.add_user(format!("<background-results>\n{}\n</background-results>", body));
-        tracing::debug!(count = notifications.len(), "injected background results");
-    }
+    /// The main agent loop: turns of inject → compact → chat → handle
+    /// until stop, abort or max turns. Returns (aborted, final turn).
+    async fn run_loop(
+        &mut self,
+        memory: &mut ConversationMemory,
+        max_turns: u32,
+        stream: bool,
+    ) -> anyhow::Result<(bool, u32)> {
+        let mut turn = 0u32;
+        let mut aborted = false;
+        loop {
+            if turn >= max_turns {
+                self.runtime.publish(AgentEvent::TaskAborted {
+                    reason: format!("Reached maximum turns ({})", max_turns),
+                });
+                aborted = true;
+                break;
+            }
 
-    /// Fire due cron jobs into the conversation (s14 turn-start
-    /// injection): lock the shared scheduler, collect the prompts due at
-    /// the current minute, and add them as a user message so the model
-    /// sees them before the next LLM call. Non-recurring jobs are removed
-    /// by `due_prompts` after firing — intended behavior.
-    fn inject_cron_triggers(&self, memory: &mut ConversationMemory) {
-        let mut scheduler = self.cron.lock().unwrap();
-        // `tick()` uses the real clock (`due_prompts(None)`).
-        let due = scheduler.tick();
-        if due.is_empty() {
-            return;
-        }
-        let body = due.join("\n");
-        memory.add_user(format!("<cron-trigger>\n{}\n</cron-trigger>", body));
-        tracing::debug!(count = due.len(), "injected cron triggers");
-    }
+            turn += 1;
+            self.todo.lock().unwrap().note_turn(turn);
+            self.runtime.publish(AgentEvent::TurnStarted { turn });
+            tracing::debug!(turn, "Agent turn");
 
-    /// Ask the LLM for a response: streamed when `stream` is set, plain
-    /// chat otherwise.
-    /// Publish a nag event when the model has not updated its todos for
-    /// several turns; the renderer surfaces it to the user (s03).
-    fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {
-        let manager = self.todo.lock().unwrap();
-        if manager.is_empty() {
-            return;
+            // Turn-start injections: background results (s08) and cron
+            // triggers (s14) arrive before the next LLM call.
+            self.inject_background_results(memory);
+            self.inject_cron_triggers(memory);
+
+            // Dynamic tool pool (s19) + context compaction (s06).
+            let tool_defs = self.tool_pool();
+            self.maybe_compact(memory).await?;
+
+            let context = memory.get_context();
+            let response = self.call_llm(&context, &tool_defs, stream).await?;
+
+            let finished = match self.handle_response(response, memory, stream).await? {
+                LoopControl::Stop => true,
+                LoopControl::Abort => {
+                    abort_session(&self.runtime, &mut aborted);
+                    break;
+                }
+                LoopControl::Continue => false,
+            };
+
+            self.runtime.publish(AgentEvent::TurnFinished { turn });
+            self.maybe_nag_todo(memory);
+
+            if finished {
+                break;
+            }
         }
-        let turns = manager.turns_since_update();
-        if turns >= TODO_NAG_AFTER_TURNS {
-            self.runtime.publish(AgentEvent::TodoNag { turns_since_update: turns });
-            memory.add_user("<reminder>Update your todos.</reminder>");
-        }
+        Ok((aborted, turn))
     }
 
     /// Handle a single LLM response.

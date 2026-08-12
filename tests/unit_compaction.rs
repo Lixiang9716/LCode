@@ -12,7 +12,7 @@ use lcode::llm::{
     ChatMessage, FinishReason, FunctionCall, LlmResponse, Role, ToolCallRequest, Usage,
 };
 use lcode::tools::Tool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 // --- Helpers ---
@@ -234,14 +234,14 @@ async fn test_auto_compact_truncates_long_conversations() {
 
 // --- The compact tool ---
 
-fn compact_tool(mock: MockLlmProvider, workspace: &std::path::Path) -> CompactTool {
-    CompactTool { provider: Arc::new(mock), workspace: workspace.to_path_buf() }
+fn compact_tool() -> (CompactTool, Arc<Mutex<Option<String>>>) {
+    let request = Arc::new(Mutex::new(None));
+    (CompactTool { request: request.clone() }, request)
 }
 
 #[test]
 fn test_compact_tool_metadata_and_parameters() {
-    let tmp = TempDir::new().unwrap();
-    let tool = compact_tool(MockLlmProvider::new(), tmp.path());
+    let (tool, _) = compact_tool();
 
     assert_eq!(tool.name(), "compact");
     assert!(tool.description().contains("focus"));
@@ -253,31 +253,23 @@ fn test_compact_tool_metadata_and_parameters() {
 }
 
 #[test]
-fn test_compact_tool_executes_auto_compact() {
-    let tmp = TempDir::new().unwrap();
-    let mut mock = MockLlmProvider::new();
-    mock.expect_chat().returning(|messages, _tools| {
-        assert!(messages[0].content.contains("Summarize this conversation"));
-        Ok(summary_response("manual summary"))
-    });
-    let tool = compact_tool(mock, tmp.path());
+fn test_compact_tool_writes_focus_to_request_channel() {
+    let (tool, request) = compact_tool();
 
     let result = tool.execute(&serde_json::json!({ "focus": "keep auth" })).unwrap();
 
     assert!(result.success);
-    assert_eq!(result.output, "manual summary");
-    assert!(tmp.path().join(".transcripts").is_dir());
+    assert_eq!(*request.lock().unwrap(), Some("keep auth".to_string()));
+    assert!(result.output.contains("Compaction requested"));
 }
 
 #[test]
-fn test_compact_tool_reports_failure() {
-    let tmp = TempDir::new().unwrap();
-    let mut mock = MockLlmProvider::new();
-    mock.expect_chat().returning(|_, _| Err(anyhow::anyhow!("boom")));
-    let tool = compact_tool(mock, tmp.path());
+fn test_compact_tool_without_focus_requests_default() {
+    let (tool, request) = compact_tool();
 
     let result = tool.execute(&serde_json::json!({})).unwrap();
 
-    assert!(!result.success);
-    assert!(result.output.contains("boom"));
+    assert!(result.success);
+    assert_eq!(*request.lock().unwrap(), None);
+    assert!(result.output.contains("Compaction requested"));
 }

@@ -40,6 +40,38 @@ pub struct Plan {
     pub max_turns: u32,
 }
 
+impl Plan {
+    /// Render the plan as a readable block for the model (s03-style
+    /// plan echo: state lives outside the conversation but is shown).
+    pub fn render(&self) -> String {
+        if self.steps.is_empty() {
+            return format!("Task: {}\n(no steps)", self.task);
+        }
+        let steps = self
+            .steps
+            .iter()
+            .map(|s| {
+                let mark = match s.status {
+                    StepStatus::Pending => "[ ]",
+                    StepStatus::InProgress => "[>]",
+                    StepStatus::Completed => "[x]",
+                    StepStatus::Failed(_) => "[!]",
+                    StepStatus::Skipped => "[-]",
+                };
+                let deps = if s.depends_on.is_empty() {
+                    String::new()
+                } else {
+                    let ids = s.depends_on.iter().map(|d| d.to_string()).collect::<Vec<_>>();
+                    format!(" (depends on: {})", ids.join(", "))
+                };
+                format!("{} #{}\t{}{}", mark, s.number, s.description, deps)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("Task: {}\n{}\n\nPlan budget: {} turns", self.task, steps, self.max_turns)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanStatus {
     Draft,
