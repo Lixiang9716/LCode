@@ -9,11 +9,12 @@
 use crate::agent::event::AgentEvent;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
-    BackgroundManager, ConversationMemory, HookContext, HookDecision, HookPoint, HookRegistry,
-    McpRegistry, Planner, TodoManager,
+    BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
+    HookRegistry, McpRegistry, Planner, TodoManager,
 };
-use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
+use crate::llm::{ChatMessage, FinishReason, LlmProvider, StreamEvent, ToolDefinition, Usage};
 use crate::tools::{ToolRegistry, ToolResult};
+use futures::StreamExt;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
@@ -43,6 +44,9 @@ pub struct Executor {
     todo: Arc<Mutex<TodoManager>>,
     background: Arc<BackgroundManager>,
     hooks: Arc<HookRegistry>,
+    /// Shared cron scheduler: the cron tools manage jobs, the executor
+    /// fires due ones by injecting them into the conversation (s14).
+    cron: Arc<Mutex<CronScheduler>>,
     mcp: Arc<Mutex<McpRegistry>>,
 }
 
@@ -56,9 +60,10 @@ impl Executor {
         todo: Arc<Mutex<TodoManager>>,
         background: Arc<BackgroundManager>,
         hooks: Arc<HookRegistry>,
+        cron: Arc<Mutex<CronScheduler>>,
         mcp: Arc<Mutex<McpRegistry>>,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime, todo, background, hooks, mcp }
+        Self { provider, registry, auto_approve, runtime, todo, background, hooks, cron, mcp }
     }
 
     /// Run the agent loop for a given task.
@@ -66,12 +71,19 @@ impl Executor {
     /// Publishes session/turn/tool events on the runtime event bus and
     /// returns the conversation memory after the run so callers (and
     /// tests) can inspect the final message history.
+    ///
+    /// `stream` toggles the LLM call style: `false` (the default) uses the
+    /// plain `chat` call; `true` streams token deltas through
+    /// [`LlmProvider::chat_stream`], publishing each delta as a
+    /// [`AgentEvent::TextGenerated`] so observers (e.g. the REPL) get a
+    /// typewriter effect.
     pub async fn run(
         &mut self,
         task: &str,
         planner: &Planner,
         mut memory: ConversationMemory,
         max_turns: u32,
+        stream: bool,
     ) -> anyhow::Result<ConversationMemory> {
         // The planner output is currently informational; keep the binding
         // explicit for future use.
@@ -105,6 +117,11 @@ impl Executor {
             // LLM call, no polling needed).
             self.inject_background_results(&mut memory);
 
+            // Turn-start injection: fire due cron jobs into the
+            // conversation (s14: pull-based, checked when the agent is
+            // idle so a one-shot agent still honors schedules).
+            self.inject_cron_triggers(&mut memory);
+
             // Assemble the tool pool per turn: built-ins + connected MCP
             // tools (s19 — dynamic pool, `connect_mcp` takes effect on
             // the next turn).
@@ -113,11 +130,15 @@ impl Executor {
             // Get the current conversation context
             let context = memory.get_context();
 
-            // Send to LLM
-            let response = self.provider.chat(&context, &tool_defs).await?;
+            // Send to LLM: stream deltas for a typewriter effect when
+            // `stream` is set, otherwise the plain chat call.
+            let response = self.call_llm(&context, &tool_defs, stream).await?;
 
-            // Handle the response
-            let finished = match self.handle_response(response, &mut memory).await? {
+            // In streaming mode the text was already published
+            // delta-by-delta (or as a streamed preview before a tool-call
+            // fallback), so handle_response must not re-publish it as a
+            // single block.
+            let finished = match self.handle_response(response, &mut memory, stream).await? {
                 LoopControl::Stop => true,
                 LoopControl::Abort => {
                     abort_session(&self.runtime, &mut aborted);
@@ -171,6 +192,81 @@ impl Executor {
         tracing::debug!(count = notifications.len(), "injected background results");
     }
 
+    /// Fire due cron jobs into the conversation (s14 turn-start
+    /// injection): lock the shared scheduler, collect the prompts due at
+    /// the current minute, and add them as a user message so the model
+    /// sees them before the next LLM call. Non-recurring jobs are removed
+    /// by `due_prompts` after firing — intended behavior.
+    fn inject_cron_triggers(&self, memory: &mut ConversationMemory) {
+        let mut scheduler = self.cron.lock().unwrap();
+        // `tick()` uses the real clock (`due_prompts(None)`).
+        let due = scheduler.tick();
+        if due.is_empty() {
+            return;
+        }
+        let body = due.join("\n");
+        memory.add_user(format!("<cron-trigger>\n{}\n</cron-trigger>", body));
+        tracing::debug!(count = due.len(), "injected cron triggers");
+    }
+
+    /// Ask the LLM for a response: streamed when `stream` is set, plain
+    /// chat otherwise.
+    async fn call_llm(
+        &self,
+        context: &[ChatMessage],
+        tool_defs: &[ToolDefinition],
+        stream: bool,
+    ) -> anyhow::Result<crate::llm::LlmResponse> {
+        if stream {
+            self.chat_stream(context, tool_defs).await
+        } else {
+            self.provider.chat(context, tool_defs).await
+        }
+    }
+
+    /// Stream a chat completion, publishing every `TextDelta` as its own
+    /// [`AgentEvent::TextGenerated`] so observers (REPL, tests) see the
+    /// typewriter effect, then reassemble the full [`LlmResponse`] from
+    /// the accumulated text and the `Done` finish reason.
+    ///
+    /// Streams never carry tool calls, so when the model finishes with
+    /// `ToolCalls` we fall back to a single `chat()` call to fetch the
+    /// full response including the tool-call arguments (a dual call that
+    /// keeps tool calling fully functional). Providers without native
+    /// streaming already fall back to `chat()` inside `chat_stream`, so
+    /// this path works for every backend.
+    async fn chat_stream(
+        &self,
+        context: &[ChatMessage],
+        tool_defs: &[ToolDefinition],
+    ) -> anyhow::Result<crate::llm::LlmResponse> {
+        let mut stream = self.provider.chat_stream(context, tool_defs).await?;
+        let mut content = String::new();
+        let mut finish_reason = FinishReason::Unknown;
+        while let Some(event) = stream.next().await {
+            match event? {
+                StreamEvent::TextDelta(delta) => {
+                    publish_delta(&self.runtime, &mut content, delta);
+                }
+                StreamEvent::Done(reason) => finish_reason = reason,
+            }
+        }
+        if finish_reason == FinishReason::ToolCalls {
+            // Streams never carry tool calls: fall back to a plain chat
+            // call for the full response (tool calls included). The
+            // fallback's text is not published again — the streamed
+            // preview already showed it — but memory still gets the
+            // authoritative content via handle_response.
+            return self.provider.chat(context, tool_defs).await;
+        }
+        Ok(crate::llm::LlmResponse {
+            content,
+            tool_calls: None,
+            usage: Usage::default(),
+            finish_reason,
+        })
+    }
+
     /// Publish a nag event when the model has not updated its todos for
     /// several turns; the renderer surfaces it to the user (s03).
     fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {
@@ -189,16 +285,23 @@ impl Executor {
     ///
     /// Executes any requested tool calls (recording results in memory) or
     /// publishes the final answer. Returns the loop control signal.
+    ///
+    /// `text_already_published` suppresses the one-shot text publish: the
+    /// streaming path emits the text as it arrives, so re-publishing the
+    /// accumulated block would print it twice in the REPL.
     async fn handle_response(
         &mut self,
         response: crate::llm::LlmResponse,
         memory: &mut ConversationMemory,
+        text_already_published: bool,
     ) -> anyhow::Result<LoopControl> {
         match response.finish_reason {
             FinishReason::ToolCalls => {
                 if let Some(ref tool_calls) = response.tool_calls {
-                    // Publish the assistant's text content if any
-                    publish_text(&self.runtime, &response.content);
+                    // Publish the assistant's text content if any (in
+                    // streaming mode this was already streamed or shown
+                    // as a preview before the fallback chat call).
+                    publish_text_unless(&self.runtime, &response.content, text_already_published);
 
                     // Add the assistant message with tool calls to memory
                     memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
@@ -211,7 +314,7 @@ impl Executor {
             }
             FinishReason::Stop | FinishReason::Length => {
                 // Final response — no more tool calls
-                publish_text(&self.runtime, &response.content);
+                publish_text_unless(&self.runtime, &response.content, text_already_published);
                 memory.add_assistant(response.content);
                 Ok(LoopControl::Stop)
             }
@@ -223,7 +326,7 @@ impl Executor {
             }
             FinishReason::Unknown => {
                 // Assume stop — just output the content
-                publish_text(&self.runtime, &response.content);
+                publish_text_unless(&self.runtime, &response.content, text_already_published);
                 Ok(LoopControl::Stop)
             }
         }
@@ -356,6 +459,22 @@ fn publish_text(runtime: &AgentRuntime, content: &str) {
     if !content.is_empty() {
         runtime.publish(AgentEvent::TextGenerated { content: content.to_string() });
     }
+}
+
+/// [`publish_text`], unless the text was already published (streaming
+/// mode emits it delta-by-delta, so a second one-shot publish would print
+/// it twice in the REPL).
+fn publish_text_unless(runtime: &AgentRuntime, content: &str, already_published: bool) {
+    if !already_published {
+        publish_text(runtime, content);
+    }
+}
+
+/// Publish a single streamed text delta as a [`AgentEvent::TextGenerated`]
+/// event (typewriter effect) and accumulate it into `content`.
+fn publish_delta(runtime: &AgentRuntime, content: &mut String, delta: String) {
+    content.push_str(&delta);
+    runtime.publish(AgentEvent::TextGenerated { content: delta });
 }
 
 /// Publish a task-abort event and mark the session as aborted.
