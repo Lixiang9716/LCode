@@ -39,8 +39,7 @@ enum IdleEnd {
 }
 
 /// Shared runtime environment for a teammate loop: the LLM provider, the
-/// message bus, protocol state, the task board, and the tool subset. When
-/// `provider` is `None` the loop falls back to the basic echo loop.
+/// message bus, protocol state, task board, and tool subset.
 #[derive(Clone)]
 pub struct TeammateEnv {
     pub team_dir: PathBuf,
@@ -153,8 +152,6 @@ impl TeammateTools {
             manager: self.manager.clone(),
             bus: self.bus.clone(),
             protocol: self.protocol.clone(),
-            // The teammate loop drives its own env; the send path only
-            // needs the bus.
             env: None,
         };
         match name {
@@ -217,7 +214,7 @@ pub async fn run_teammate_loop(name: String, role: String, env: TeammateEnv) {
         )),
     ];
     let mut last_len = messages.len();
-    let mut wake = true; // the initial prompt is itself a unit of work (s15)
+    let mut wake = true;
     loop {
         reinject_identity(&mut messages, &name, &role, last_len);
         last_len = messages.len();
@@ -233,9 +230,8 @@ pub async fn run_teammate_loop(name: String, role: String, env: TeammateEnv) {
     set_member_state(&env.team_dir, &name, TeammateState::Shutdown);
 }
 
-/// WORK phase (s15): drain the inbox, dispatch protocol messages, then run
-/// LLM turns until the model stops asking for tools. `wake` forces at
-/// least one LLM turn (initial spawn or after an idle injection).
+/// WORK phase (s15): drain the inbox, dispatch protocol messages, then
+/// run LLM turns until the model stops asking for tools.
 async fn work_phase(
     name: &str,
     env: &TeammateEnv,
@@ -244,6 +240,10 @@ async fn work_phase(
 ) -> WorkEnd {
     let mut worked = false;
     for _ in 0..TEAMMATE_WORK_TURNS {
+        // Session end stops the loop promptly (the bus must close).
+        if env.bus.is_shutdown() {
+            return WorkEnd::Shutdown;
+        }
         let (shutdown, injected) = inject_inbox(name, env, messages);
         if shutdown {
             return WorkEnd::Shutdown;
@@ -261,14 +261,16 @@ async fn work_phase(
     WorkEnd::Idle
 }
 
-/// IDLE phase (s17): poll the inbox and the task board every
-/// `idle_interval`; auto-claim the first unclaimed task; after
-/// `idle_polls` empty polls, send a summary to the lead and shut down.
+/// IDLE phase (s17): poll the inbox and task board; after `idle_polls`
+/// empty polls, send a summary to the lead and shut down.
 async fn idle_phase(name: &str, env: &TeammateEnv, messages: &mut Vec<ChatMessage>) -> IdleEnd {
     let mut idle_polls: u32 = 0;
     loop {
         tokio::time::sleep(env.idle_interval).await;
         idle_polls += 1;
+        if env.bus.is_shutdown() {
+            return IdleEnd::Shutdown;
+        }
         set_member_state(&env.team_dir, name, TeammateState::Idle);
 
         let (shutdown, injected) = inject_inbox(name, env, messages);

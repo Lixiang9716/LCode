@@ -40,6 +40,7 @@ mod mcp;
 mod mcp_stdio;
 mod memory;
 mod memory_store;
+mod message_bus;
 mod planner;
 mod prompt;
 mod protocol;
@@ -332,7 +333,7 @@ async fn execute_session(
         mcp: mcp_registry,
         compact_request,
         memory_store: Some(memory_store),
-        team_bus: Some(team_bus),
+        team_bus: Some(team_bus.clone()),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
@@ -342,6 +343,11 @@ async fn execute_session(
     // before awaiting the renderer, or the renderer never observes the
     // channel close and the process hangs after the task completes.
     drop(executor);
+
+    // Teammate loops hold the team event bus; without a shutdown signal
+    // they keep working after the session ends and the renderer never
+    // observes the channel close (the process hangs for minutes).
+    team_bus.shutdown();
 
     let _ = renderer.await;
     let _ = recorder.await;
