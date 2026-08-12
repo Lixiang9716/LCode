@@ -125,4 +125,6 @@ jobs:
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
           files: ${{ env.artifact_path }}
-          generate_release_notes: true
+          # No generate_release_notes: release-please already wrote the
+          # changelog body; GitHub's auto-generated "What's Changed" list
+          # would duplicate every PR.
