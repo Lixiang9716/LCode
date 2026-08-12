@@ -19,6 +19,7 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
             println!("  llm.api_base        - Custom API base URL");
             println!("  llm.max_tokens      - Max tokens per response");
             println!("  llm.temperature     - Generation temperature (0.0-2.0)");
+            println!("  llm.fallback_model  - Fallback model when retries are exhausted");
             println!("  agent.system_prompt - Custom system prompt");
             println!("  agent.max_turns     - Max conversation turns");
             println!("  agent.require_approval - Require approval for tool calls");
@@ -49,6 +50,7 @@ pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
         "llm.api_base" => Ok(cfg.llm.api_base.clone().unwrap_or_default()),
         "llm.max_tokens" => Ok(cfg.llm.max_tokens.to_string()),
         "llm.temperature" => Ok(cfg.llm.temperature.to_string()),
+        "llm.fallback_model" => Ok(cfg.llm.fallback_model.clone().unwrap_or_default()),
         "agent.system_prompt" => Ok(cfg.agent.system_prompt.clone()),
         "agent.max_turns" => Ok(cfg.agent.max_turns.to_string()),
         "agent.require_approval" => Ok(cfg.agent.require_approval.to_string()),
@@ -84,6 +86,9 @@ pub fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
         "llm.api_base" => cfg.llm.api_base = Some(value.to_string()),
         "llm.max_tokens" => cfg.llm.max_tokens = value.parse()?,
         "llm.temperature" => cfg.llm.temperature = value.parse()?,
+        "llm.fallback_model" => {
+            cfg.llm.fallback_model = if value.is_empty() { None } else { Some(value.to_string()) }
+        }
         "agent.system_prompt" => cfg.agent.system_prompt = value.to_string(),
         "agent.max_turns" => cfg.agent.max_turns = value.parse()?,
         "agent.require_approval" => cfg.agent.require_approval = value.parse()?,

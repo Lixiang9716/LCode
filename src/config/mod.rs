@@ -77,6 +77,9 @@ pub fn merge_config(base: &mut Config, other: Config) {
     if other.llm.temperature != default_temperature() {
         base.llm.temperature = other.llm.temperature;
     }
+    if other.llm.fallback_model.is_some() {
+        base.llm.fallback_model = other.llm.fallback_model;
+    }
     if !other.agent.system_prompt.is_empty() {
         base.agent.system_prompt = other.agent.system_prompt;
     }
@@ -120,5 +123,8 @@ pub fn apply_env_overrides(cfg: &mut Config) {
         if let Ok(n) = val.parse() {
             cfg.llm.max_tokens = n;
         }
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_FALLBACK_MODEL") {
+        cfg.llm.fallback_model = Some(val);
     }
 }

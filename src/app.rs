@@ -2,7 +2,8 @@
 //!
 //! Routes CLI commands to the appropriate handler: REPL, single-shot run, or config management.
 
-use crate::cli::{Cli, Command};
+use crate::agent::{ConversationMemory, SessionSnapshot, SessionStore};
+use crate::cli::{Cli, Command, SessionAction};
 use crate::config::Config;
 
 /// Main application runner — dispatches based on the parsed CLI command.
@@ -22,8 +23,57 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Config { action } => {
             crate::config::handle_command(action)?;
         }
+        Command::Session { action } => {
+            handle_session(action, cfg).await?;
+        }
         Command::Update { check, force } => {
             crate::update::run(check, force).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Handle the `lcode session` subcommands (save / list / resume).
+async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()> {
+    let store = SessionStore::new(&crate::agent::workspace_root()?);
+    match action {
+        SessionAction::Save { task, id } => {
+            let task_desc = task.join(" ");
+            if task_desc.trim().is_empty() {
+                anyhow::bail!(
+                    "Task description cannot be empty. Usage: lcode session save \"<task>\" [--id <id>]"
+                );
+            }
+            let saved_id = store.save(&SessionSnapshot::empty(task_desc, id))?;
+            println!("Session saved: {saved_id}");
+            println!("Resume later with: lcode session resume {saved_id}");
+        }
+        SessionAction::List => {
+            let sessions = store.list();
+            if sessions.is_empty() {
+                println!("No saved sessions.");
+                return Ok(());
+            }
+            println!("{:<12} {:<12} TASK", "ID", "CREATED");
+            for session in sessions {
+                println!("{:<12} {:<12} {}", session.id, session.created_at, session.task);
+            }
+        }
+        SessionAction::Resume { id } => {
+            let snapshot = store.load(&id)?;
+            tracing::info!(session = %id, task = %snapshot.task, "Resuming session");
+            let memory = ConversationMemory::from_messages(
+                cfg.agent.system_prompt.clone(),
+                snapshot.messages,
+            );
+            crate::agent::run_task_with_memory(
+                &snapshot.task,
+                cfg.agent.max_turns,
+                cfg.agent.require_approval,
+                &cfg,
+                Some(memory),
+            )
+            .await?;
         }
     }
     Ok(())
