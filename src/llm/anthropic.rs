@@ -133,8 +133,10 @@ impl LlmProvider for AnthropicProvider {
     /// Real streaming (G11): the same messages body with `stream: true`;
     /// the SSE response maps `content_block_delta` (text_delta) events to
     /// [`StreamEvent::TextDelta`] and the final `message_delta`'s
-    /// `stop_reason` to [`StreamEvent::Done`]. `[DONE]` and `message_stop`
-    /// are safe fallbacks that end the stream with `Done(Stop)`.
+    /// `stop_reason` to [`StreamEvent::Done`]. End-of-stream sentinels
+    /// (`[DONE]`) emit nothing: they must not overwrite the real
+    /// `stop_reason` (a `tool_use` stop followed by the sentinel would
+    /// otherwise collapse to `Stop` and silently drop the tool call).
     async fn chat_stream(
         &self,
         messages: &[ChatMessage],
@@ -161,7 +163,7 @@ impl LlmProvider for AnthropicProvider {
         let stream = sse_stream(response).filter_map(|item| async move {
             match item {
                 Ok(SseData::Json(data)) => anthropic_stream_event(&data).map(Ok),
-                Ok(SseData::Done) => Some(Ok(StreamEvent::Done(FinishReason::Stop))),
+                Ok(SseData::Done) => None,
                 Ok(SseData::Other(_)) => None,
                 Err(e) => Some(Err(e)),
             }
@@ -262,9 +264,11 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
                 _ => FinishReason::Unknown,
             }))
         }
-        // Final event of a message; a fallback in case `message_delta`
-        // was missing (some compatible endpoints omit it).
-        Some("message_stop") => Some(StreamEvent::Done(FinishReason::Stop)),
+        // End-of-message sentinel: emits nothing. The finish reason
+        // comes exclusively from `message_delta.stop_reason`; a fallback
+        // `Done(Stop)` here would overwrite a `tool_use` stop and make
+        // the executor treat a tool-call stream as a silent empty text.
+        Some("message_stop") => None,
         _ => None,
     }
 }

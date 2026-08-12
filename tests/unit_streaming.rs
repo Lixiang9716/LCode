@@ -158,3 +158,81 @@ async fn test_non_streaming_run_does_not_call_chat_stream() {
         .collect();
     assert_eq!(deltas, vec!["Plain answer."]);
 }
+
+/// A streamed response that ends in a tool call must fall back to a
+/// plain `chat()` call so the tool call is executed instead of being
+/// silently dropped (E2E regression: streamed tool-call turns collapsed
+/// into empty one-turn "success").
+#[tokio::test]
+async fn test_streaming_tool_call_falls_back_to_chat() {
+    let mut mock = MockLlmProvider::new();
+    // Turn 1's stream carries no text, just the tool-call stop reason;
+    // turn 2 streams a plain answer and ends the loop.
+    let stream_turns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let turns = stream_turns.clone();
+    mock.expect_chat_stream().times(0..).returning(move |_messages, _tools| {
+        let n = turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let events = if n == 0 {
+            vec![Ok(StreamEvent::Done(FinishReason::ToolCalls))]
+        } else {
+            vec![
+                Ok(StreamEvent::TextDelta("done".to_string())),
+                Ok(StreamEvent::Done(FinishReason::Stop)),
+            ]
+        };
+        Ok(Box::pin(futures::stream::iter(events)))
+    });
+    // The fallback chat returns the full response with the tool call.
+    mock.expect_chat().times(1).returning(|_messages, _tools| {
+        Ok(lcode::llm::LlmResponse {
+            content: String::new(),
+            tool_calls: Some(vec![lcode::llm::ToolCallRequest {
+                id: "call-1".to_string(),
+                call_type: "function".to_string(),
+                function: lcode::llm::FunctionCall {
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({}).to_string(),
+                },
+            }]),
+            usage: lcode::llm::Usage::default(),
+            finish_reason: FinishReason::ToolCalls,
+        })
+    });
+    mock.expect_name().times(0..).return_const("mock".to_string());
+    mock.expect_validate().times(0..).returning(|| Ok(()));
+
+    let (runtime, events_rx, _commands_tx) = AgentRuntime::new();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&tmp.path().to_path_buf())));
+    let mut executor = Executor::new(
+        Box::new(mock),
+        ToolRegistry::new(&Config::default()).expect("build tool registry"),
+        true,
+        runtime,
+        lcode::agent::SessionState {
+            todo: Arc::new(Mutex::new(TodoManager::default())),
+            background: Arc::new(BackgroundManager::default()),
+            hooks: Arc::new(lcode::agent::HookRegistry::default()),
+            cron,
+            mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+            compact_request: Arc::new(std::sync::Mutex::new(None)),
+            memory_store: None,
+            team_bus: None,
+        },
+    );
+
+    let memory = ConversationMemory::new("sys".to_string());
+    let planner = Planner::new(50);
+    // The tool call is executed (list_dir) and the loop continues.
+    let memory =
+        executor.run("tool stream", &planner, memory, 5, true).await.expect("run should succeed");
+    let events = collect_events(events_rx).await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::ToolCallExecuted { .. })),
+        "the fallback chat's tool call must execute: {events:?}"
+    );
+    assert!(
+        memory.messages().iter().any(|m| matches!(m.role, Role::Tool)),
+        "tool result must land in conversation memory"
+    );
+}
