@@ -54,8 +54,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: lcode-linux-x86_64
           - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: lcode-linux-aarch64
+            cross: true
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact: lcode-linux-musl-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact: lcode-linux-musl-aarch64
+            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: lcode-macos-x86_64
@@ -82,7 +90,22 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # Cross-compile aarch64 linux targets with zig (universal C
+      # compiler): handles ring's C build without per-arch toolchains.
+      - name: Install zig
+        if: matrix.cross
+        uses: goto-bus-stop/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        if: matrix.cross
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build release binary (cross)
+        if: matrix.cross
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
       - name: Build release binary
+        if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
