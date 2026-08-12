@@ -7,10 +7,11 @@
 //! Subscribers (REPL, logging, tests, future UIs) consume the event stream
 //! without coupling to the agent loop's internals.
 
+use serde::Serialize;
 use serde_json::Value;
 
 /// Events published by the agent runtime during a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum AgentEvent {
     /// A session starts with the given task description.
     SessionStarted { task: String },

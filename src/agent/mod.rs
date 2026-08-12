@@ -43,6 +43,7 @@ mod memory_store;
 mod planner;
 mod prompt;
 mod protocol;
+mod recorder;
 mod render;
 mod retry;
 mod runtime;
@@ -84,6 +85,7 @@ pub use protocol::{
     ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
     ReviewPlanTool, SubmitPlanTool,
 };
+pub use recorder::spawn_event_recorder;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
 pub use runtime::{AgentRuntime, ApprovalDecision};
@@ -291,6 +293,12 @@ async fn execute_session(
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
 ) -> anyhow::Result<()> {
+    // Audit trail: every event (turns, tool calls, subagents, background
+    // tasks, team messages, ...) lands in `.transcripts/events_{ts}.jsonl`
+    // with a timestamp, in arrival order. Fire-and-forget; the task ends
+    // when the event bus closes. Subscribed before the renderer takes
+    // `events_rx`, so no event published after this point is missed.
+    let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
     // G9 (s07): skill layer-1 descriptions join the base system prompt;
@@ -326,6 +334,7 @@ async fn execute_session(
     drop(executor);
 
     let _ = renderer.await;
+    let _ = recorder.await;
     Ok(())
 }
 
