@@ -82,8 +82,16 @@ pub fn spawn_event_recorder(
             }
         };
         let mut file = std::io::BufWriter::new(file);
-        while let Ok(event) = events.recv().await {
-            append_event(&mut file, &event);
+        loop {
+            match events.recv().await {
+                Ok(event) => append_event(&mut file, &event),
+                // A slow consumer skips events; keep recording instead of
+                // treating the lag as the end of the stream.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "event recorder lagged; events not recorded");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
         }
         if let Err(e) = file.flush() {
             tracing::warn!(error = %e, "event recorder: flush failed");

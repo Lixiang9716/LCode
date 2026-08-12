@@ -103,7 +103,7 @@ fn test_turns_since_update() {
 #[test]
 fn test_todo_update_tool_round_trip() {
     let manager = Arc::new(Mutex::new(TodoManager::default()));
-    let tool = TodoUpdateTool { manager: manager.clone() };
+    let tool = TodoUpdateTool { manager: manager.clone(), events: None };
 
     let result = tool
         .execute(&serde_json::json!({
@@ -124,7 +124,7 @@ fn test_todo_update_tool_round_trip() {
 #[test]
 fn test_todo_update_tool_parameters_schema() {
     let manager = Arc::new(Mutex::new(TodoManager::default()));
-    let tool = TodoUpdateTool { manager };
+    let tool = TodoUpdateTool { manager, events: None };
 
     let schema = tool.parameters();
     let status_enum = schema["properties"]["items"]["items"]["properties"]["status"]["enum"]
@@ -141,7 +141,7 @@ fn test_todo_update_tool_parameters_schema() {
 #[test]
 fn test_todo_update_tool_errors() {
     let manager = Arc::new(Mutex::new(TodoManager::default()));
-    let tool = TodoUpdateTool { manager };
+    let tool = TodoUpdateTool { manager, events: None };
 
     // Missing required argument -> hard error.
     let err = tool.execute(&serde_json::json!({})).expect_err("missing items");

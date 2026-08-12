@@ -35,8 +35,27 @@ pub async fn run_subagent(
     registry: &crate::tools::ToolRegistry,
     max_turns: u32,
     hooks: Option<Arc<HookRegistry>>,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 ) -> anyhow::Result<String> {
-    // Fresh context: only the prompt (s04: context isolation).
+    if let Some(tx) = &events {
+        let _ = tx.send(crate::agent::AgentEvent::SubagentSpawned { prompt: prompt.to_string() });
+    }
+    let summary = run_subagent_loop(prompt, provider, registry, max_turns, hooks).await?;
+    if let Some(tx) = &events {
+        let _ = tx.send(crate::agent::AgentEvent::SubagentCompleted { summary: summary.clone() });
+    }
+    Ok(summary)
+}
+
+/// The subagent turn loop: fresh context, tool use until a final answer
+/// or the turn budget runs out.
+async fn run_subagent_loop(
+    prompt: &str,
+    provider: Arc<dyn crate::llm::LlmProvider>,
+    registry: &crate::tools::ToolRegistry,
+    max_turns: u32,
+    hooks: Option<Arc<HookRegistry>>,
+) -> anyhow::Result<String> {
     let mut messages = vec![ChatMessage::user(prompt.to_string())];
     let tool_defs = registry.definitions();
     let turns = max_turns.clamp(1, MAX_SUBAGENT_TURNS);
@@ -102,6 +121,7 @@ pub async fn run_subagents_parallel(
     registry: Arc<crate::tools::ToolRegistry>,
     max_turns: u32,
     hooks: Option<Arc<HookRegistry>>,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 ) -> Vec<(String, String)> {
     let labels: Vec<String> = prompts.iter().map(|(label, _)| label.clone()).collect();
     let handles: Vec<tokio::task::JoinHandle<anyhow::Result<String>>> = prompts
@@ -110,8 +130,9 @@ pub async fn run_subagents_parallel(
             let provider = provider.clone();
             let registry = registry.clone();
             let hooks = hooks.clone();
+            let events = events.clone();
             tokio::spawn(async move {
-                run_subagent(&prompt, provider, &registry, max_turns, hooks).await
+                run_subagent(&prompt, provider, &registry, max_turns, hooks, events).await
             })
         })
         .collect();
@@ -123,6 +144,10 @@ pub async fn run_subagents_parallel(
             Ok(Err(e)) => format!("(subagent failed: {e})"),
             Err(e) => format!("(subagent task failed: {e})"),
         };
+        if let Some(tx) = &events {
+            let _ =
+                tx.send(crate::agent::AgentEvent::SubagentCompleted { summary: summary.clone() });
+        }
         results.push((label, summary));
     }
     results
@@ -134,6 +159,9 @@ pub struct TaskTool {
     pub registry: Arc<crate::tools::ToolRegistry>,
     /// Session PreToolUse hooks, forwarded to the subagent (G12).
     pub hooks: Option<Arc<HookRegistry>>,
+    /// Session event bus; publishes `SubagentCompleted` when the child
+    /// returns (spawn events come from `run_subagent` itself).
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for TaskTool {
@@ -186,6 +214,7 @@ impl Tool for TaskTool {
                 &self.registry,
                 max_turns,
                 self.hooks.clone(),
+                self.events.clone(),
             ))
         })
         .map_err(|e| anyhow::anyhow!("subagent failed: {e}"))?;
@@ -202,13 +231,20 @@ pub fn register(
     provider: Arc<dyn crate::llm::LlmProvider>,
     registry_ref: Arc<crate::tools::ToolRegistry>,
     hooks: Option<Arc<HookRegistry>>,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 ) {
     registry.register(Box::new(TaskTool {
         provider: provider.clone(),
         registry: registry_ref.clone(),
         hooks: hooks.clone(),
+        events: events.clone(),
     }));
-    registry.register(Box::new(TaskParallelTool { provider, registry: registry_ref, hooks }));
+    registry.register(Box::new(TaskParallelTool {
+        provider,
+        registry: registry_ref,
+        hooks,
+        events,
+    }));
 }
 
 /// Tool: `task_parallel` — fan out independent subtasks to subagents that
@@ -218,6 +254,8 @@ pub struct TaskParallelTool {
     pub registry: Arc<crate::tools::ToolRegistry>,
     /// Session PreToolUse hooks, forwarded to the subagents (G12).
     pub hooks: Option<Arc<HookRegistry>>,
+    /// Session event bus; publishes `SubagentCompleted` per result.
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for TaskParallelTool {
@@ -278,6 +316,7 @@ impl Tool for TaskParallelTool {
                 self.registry.clone(),
                 max_turns,
                 self.hooks.clone(),
+                self.events.clone(),
             ))
         });
         let output = if results.is_empty() {

@@ -115,22 +115,42 @@ pub fn spawn_renderer(
     commands: mpsc::Sender<AgentCommand>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Ok(event) = events.recv().await {
-            render_event(&event);
-
-            if let AgentEvent::ToolCallRequested { id, requires_approval: true, .. } = &event {
-                let approved = read_approval_line().await;
-                let command = if approved {
-                    AgentCommand::ApproveToolCall { id: id.clone() }
-                } else {
-                    AgentCommand::RejectToolCall { id: id.clone() }
-                };
-                if commands.send(command).await.is_err() {
-                    break;
+        loop {
+            let keep_going = match events.recv().await {
+                Ok(event) => {
+                    render_event(&event);
+                    // Approval prompts read stdin and answer on the
+                    // command channel; a broken channel ends the loop.
+                    answer_approval(&event, &commands).await
                 }
+                // A lagged consumer only misses the skipped events; keep
+                // rendering instead of ending the stream.
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    tracing::warn!("renderer lagged; some events were skipped");
+                    true
+                }
+                Err(broadcast::error::RecvError::Closed) => false,
+            };
+            if !keep_going {
+                break;
             }
         }
     })
+}
+
+/// Answer an approval prompt (when the event requests one) and return
+/// false when the command channel is gone.
+async fn answer_approval(event: &AgentEvent, commands: &mpsc::Sender<AgentCommand>) -> bool {
+    let AgentEvent::ToolCallRequested { id, requires_approval: true, .. } = event else {
+        return true;
+    };
+    let approved = read_approval_line().await;
+    let command = if approved {
+        AgentCommand::ApproveToolCall { id: id.clone() }
+    } else {
+        AgentCommand::RejectToolCall { id: id.clone() }
+    };
+    commands.send(command).await.is_ok()
 }
 
 /// Read a single approval line from stdin (y/yes → approve).

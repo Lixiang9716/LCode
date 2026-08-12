@@ -148,6 +148,8 @@ pub fn with_layer1(base: &str, registry: &SkillRegistry) -> String {
 /// Tool: `load_skill` — pulls the full skill body into the context.
 pub struct LoadSkillTool {
     pub registry: Arc<Mutex<SkillRegistry>>,
+    /// Session event bus; publishes `SkillLoaded` when a skill loads.
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for LoadSkillTool {
@@ -180,13 +182,20 @@ impl Tool for LoadSkillTool {
         if registry.is_empty() {
             return Ok(ToolResult::ok("no skills loaded"));
         }
+        if let Some(tx) = &self.events {
+            let _ = tx.send(crate::agent::AgentEvent::SkillLoaded { name: name.to_string() });
+        }
         Ok(ToolResult::ok(registry.content(name)))
     }
 }
 
 /// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry, skills_dir: PathBuf) {
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    skills_dir: PathBuf,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
+) {
     let mut r = SkillRegistry::default();
     let _ = r.load_from(&skills_dir);
-    registry.register(Box::new(LoadSkillTool { registry: Arc::new(Mutex::new(r)) }));
+    registry.register(Box::new(LoadSkillTool { registry: Arc::new(Mutex::new(r)), events }));
 }

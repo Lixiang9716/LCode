@@ -125,6 +125,8 @@ impl TodoManager {
 /// Tool: `todo_update` — the model writes its plan through this tool.
 pub struct TodoUpdateTool {
     pub manager: std::sync::Arc<std::sync::Mutex<TodoManager>>,
+    /// Session event bus; publishes `TodoUpdated` after each update.
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for TodoUpdateTool {
@@ -173,9 +175,21 @@ impl Tool for TodoUpdateTool {
         };
         let mut manager = self.manager.lock().unwrap();
         match manager.update(items) {
-            Ok(()) => Ok(ToolResult::ok(manager.render())),
+            Ok(()) => {
+                let event =
+                    crate::agent::AgentEvent::TodoUpdated { items: manager.items().to_vec() };
+                publish(self, event);
+                Ok(ToolResult::ok(manager.render()))
+            }
             Err(e) => Ok(ToolResult::err(e.to_string())),
         }
+    }
+}
+
+/// Send `event` on the tool's session bus when one is attached.
+fn publish(tool: &TodoUpdateTool, event: crate::agent::AgentEvent) {
+    if let Some(tx) = &tool.events {
+        let _ = tx.send(event);
     }
 }
 
@@ -186,6 +200,7 @@ impl Tool for TodoUpdateTool {
 pub fn register(
     registry: &mut crate::tools::ToolRegistry,
     manager: std::sync::Arc<std::sync::Mutex<TodoManager>>,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 ) {
-    registry.register(Box::new(TodoUpdateTool { manager }));
+    registry.register(Box::new(TodoUpdateTool { manager, events }));
 }

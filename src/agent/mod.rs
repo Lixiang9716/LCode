@@ -149,17 +149,17 @@ fn build_session(
 
     let workspace = std::env::current_dir()?;
     let todo = Arc::new(Mutex::new(TodoManager::default()));
-    todo::register(&mut registry, todo.clone());
+    todo::register(&mut registry, todo.clone(), Some(runtime.events_sender()));
 
     let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
-    skill::register(&mut registry, skills_dir.clone());
+    skill::register(&mut registry, skills_dir.clone(), Some(runtime.events_sender()));
 
     let compact_request = Arc::new(Mutex::new(None));
     compaction::register(&mut registry, compact_request.clone());
 
     let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
-    task::register(&mut registry, &workspace);
+    task::register(&mut registry, &workspace, Some(runtime.events_sender()));
 
     // INTEGRATION POINT: teammate replies land in
     // `{workspace}/.team/inbox/lead.jsonl`; the executor's turn-start
@@ -243,6 +243,7 @@ pub async fn run_task_with_memory(
         Arc::from(build_provider(config)?),
         subagent_registry,
         Some(hooks.clone()),
+        Some(runtime.events_sender()),
     );
 
     // Run the session: renderer + memory assembly + executor loop.
