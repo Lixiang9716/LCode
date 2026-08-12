@@ -19,7 +19,8 @@
 //! - [`run_subagent`] — context-isolated subtask delegation (s04)
 //! - [`BackgroundManager`] — non-blocking background commands (s08)
 //! - [`TaskManager`] — persistent disk-backed task board (s07)
-//! - [`TeammateManager`] — multi-agent teams, protocols, autonomy (s09-s11)
+//! - [`TeammateManager`] — multi-agent teams with real LLM loops, team
+//!   protocols, and autonomy (s09-s17)
 //! - [`WorktreeManager`] — git worktree task isolation (s12)
 
 use crate::config::Config;
@@ -40,6 +41,7 @@ mod memory;
 mod memory_store;
 mod planner;
 mod prompt;
+mod protocol;
 mod render;
 mod retry;
 mod runtime;
@@ -49,6 +51,7 @@ mod stream;
 mod subagent;
 mod task;
 mod team;
+mod teammate;
 mod todo;
 mod worktree;
 
@@ -73,15 +76,26 @@ pub use memory_store::{
 };
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use prompt::PromptSection;
+pub use protocol::{
+    dispatch_message, parse_plan_verdict, plan_verdict_content, DispatchAction, ProtocolManager,
+    ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
+    ReviewPlanTool, SubmitPlanTool,
+};
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
 pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
-pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
+pub use task::{
+    Task, TaskClaimTool, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool,
+};
 pub use team::{
-    MessageBus, TeamMessage, Teammate, TeammateManager, TeammateState, VALID_MSG_TYPES,
+    MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate, TeammateManager, TeammateState,
+    VALID_MSG_TYPES,
+};
+pub use teammate::{
+    handle_teammate_message, reinject_identity, run_teammate_loop, TeammateEnv, TeammateTools,
 };
 pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
 pub use worktree::{EventLog, WorktreeManager};
@@ -128,7 +142,23 @@ pub async fn run_task(
     let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
     task::register(&mut registry, &workspace);
-    team::register(&mut registry, &workspace);
+    // Team (s09-s17): teammates run real LLM loops (s15) with team
+    // protocols (s16) and autonomous task claiming (s17). The provider is
+    // built from the same config so teammates share the retry/backoff
+    // semantics of the main loop; the event bus keeps teammates observable.
+    //
+    // INTEGRATION POINT for the main agent / executor: teammate replies and
+    // protocol responses land in `{workspace}/.team/inbox/lead.jsonl`. At
+    // turn-start the executor should drain the lead's inbox and inject the
+    // text into the conversation (`MessageBus::read_inbox("lead")` or the
+    // ready-to-inject `MessageBus::drain_lead_inbox`). Executor wiring is
+    // owned by the executor batch; the read + format side lives in team.rs.
+    team::register(
+        &mut registry,
+        &workspace,
+        Arc::from(build_provider(config)?),
+        Some(runtime.events_sender()),
+    );
     worktree::register(&mut registry, &workspace);
     // Cron (s14): one scheduler shared by the three cron tools and the
     // executor, so tools manage jobs while the loop fires due ones.

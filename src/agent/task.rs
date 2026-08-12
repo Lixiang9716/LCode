@@ -19,6 +19,17 @@ pub enum TaskStatus {
     Completed,
 }
 
+impl TaskStatus {
+    /// Lowercase form used in error messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskStatus::Pending => "pending",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Completed => "completed",
+        }
+    }
+}
+
 /// A persistent task record. Serialized to `task_{id}.json` with
 /// camelCase keys (`blockedBy`), matching the s07 reference format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +39,10 @@ pub struct Task {
     pub title: String,
     pub status: TaskStatus,
     pub blocked_by: Vec<u32>,
+    /// Claiming agent (s17). `None` while unclaimed; older task files
+    /// without the key default to `None` (serde default).
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 /// Disk-backed task manager. One file per task under `tasks_dir`.
@@ -53,6 +68,7 @@ impl TaskManager {
             title: title.to_string(),
             status: TaskStatus::Pending,
             blocked_by,
+            owner: None,
         };
         self.save(&task)?;
         Ok(task)
@@ -84,6 +100,59 @@ impl TaskManager {
             self.clear_dependency(id)?;
         }
         Ok(task)
+    }
+
+    /// True when every dependency of `id` exists and is completed (s17).
+    /// Missing dependencies block the task.
+    pub fn can_start(&self, id: u32) -> anyhow::Result<bool> {
+        let task = self.get(id)?;
+        for dependency in &task.blocked_by {
+            let dependency = match self.get(*dependency) {
+                Ok(dependency) => dependency,
+                Err(_) => return Ok(false),
+            };
+            if dependency.status != TaskStatus::Completed {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Claim a task for `owner`: only pending, unclaimed tasks whose
+    /// dependencies are all completed may be claimed. The read-check-write
+    /// happens under the caller's manager lock (atomic claim, s17).
+    pub fn claim(&self, id: u32, owner: &str) -> anyhow::Result<Task> {
+        let mut task = self.get(id)?;
+        if task.status != TaskStatus::Pending {
+            anyhow::bail!("Task {id} is {}, cannot claim", task.status.as_str());
+        }
+        if let Some(current) = &task.owner {
+            anyhow::bail!("Task {id} already owned by {current}");
+        }
+        if !self.can_start(id)? {
+            anyhow::bail!("Task {id} blocked by uncompleted dependencies");
+        }
+        task.owner = Some(owner.to_string());
+        task.status = TaskStatus::InProgress;
+        self.save(&task)?;
+        Ok(task)
+    }
+
+    /// Tasks that are pending, unowned, and ready to start (all
+    /// dependencies completed) — the board entries an autonomous
+    /// teammate may claim (s17).
+    pub fn scan_unclaimed(&self) -> Vec<Task> {
+        let mut unclaimed = Vec::new();
+        for id in self.ids_on_disk() {
+            let Ok(task) = self.get(id) else { continue };
+            if task.status == TaskStatus::Pending
+                && task.owner.is_none()
+                && self.can_start(id).unwrap_or(false)
+            {
+                unclaimed.push(task);
+            }
+        }
+        unclaimed
     }
 
     /// Render the board as a readable list for the model.
@@ -150,19 +219,23 @@ impl TaskManager {
     }
 }
 
-/// Render one task line: `[ ]` / `[>]` / `[x] #id: title (blocked by: ...)`.
+/// Render one task line: `[ ]` / `[>]` / `[x] #id: title (owner / blocked by)`.
 fn render_task(task: &Task) -> String {
     let marker = match task.status {
         TaskStatus::Pending => "[ ]",
         TaskStatus::InProgress => "[>]",
         TaskStatus::Completed => "[x]",
     };
-    let blocked = if task.blocked_by.is_empty() {
-        String::new()
-    } else {
-        format!(" (blocked by: {})", join_ids(&task.blocked_by))
-    };
-    format!("{marker} #{id}: {title}{blocked}", id = task.id, title = task.title)
+    let mut detail: Vec<String> = Vec::new();
+    if let Some(owner) = &task.owner {
+        detail.push(format!("owner: {owner}"));
+    }
+    if !task.blocked_by.is_empty() {
+        detail.push(format!("blocked by: {}", join_ids(&task.blocked_by)));
+    }
+    let suffix =
+        if detail.is_empty() { String::new() } else { format!(" ({})", detail.join("; ")) };
+    format!("{marker} #{id}: {title}{suffix}", id = task.id, title = task.title)
 }
 
 /// `1, 2, 3` — comma-separated task ids.
@@ -312,7 +385,7 @@ impl Tool for TaskListTool {
         "task_list"
     }
     fn description(&self) -> &str {
-        "List the task board: status, ids, and dependencies."
+        "List the task board: status, owners, ids, and dependencies."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object", "properties": {} })
@@ -323,11 +396,53 @@ impl Tool for TaskListTool {
     }
 }
 
-/// Register this module's tools with the registry. All three tools share
+/// Tool: `task_claim` (s17).
+pub struct TaskClaimTool {
+    pub manager: Arc<Mutex<TaskManager>>,
+}
+
+impl Tool for TaskClaimTool {
+    fn name(&self) -> &str {
+        "task_claim"
+    }
+    fn description(&self) -> &str {
+        "Claim a pending task: assigns the task to an owner and marks it \
+         in_progress. Only unowned tasks with all dependencies completed \
+         can be claimed."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "integer", "description": "Task id to claim" },
+                "owner": {
+                    "type": "string",
+                    "description": "Claiming agent's name (default: agent)"
+                }
+            },
+            "required": ["id"]
+        })
+    }
+    fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        let id = args["id"]
+            .as_u64()
+            .map(|id| id as u32)
+            .ok_or_else(|| anyhow::anyhow!("task_claim: missing required argument 'id'"))?;
+        let owner = args["owner"].as_str().unwrap_or("agent");
+        let manager = self.manager.lock().unwrap();
+        match manager.claim(id, owner) {
+            Ok(task) => Ok(ToolResult::ok(render_task(&task))),
+            Err(e) => Ok(ToolResult::err(e.to_string())),
+        }
+    }
+}
+
+/// Register this module's tools with the registry. All four tools share
 /// a single [`TaskManager`] so the board stays consistent across tools.
 pub fn register(registry: &mut crate::tools::ToolRegistry, workspace: &Path) {
     let manager = Arc::new(Mutex::new(TaskManager::new(workspace)));
     registry.register(Box::new(TaskCreateTool { manager: manager.clone() }));
     registry.register(Box::new(TaskUpdateTool { manager: manager.clone() }));
-    registry.register(Box::new(TaskListTool { manager }));
+    registry.register(Box::new(TaskListTool { manager: manager.clone() }));
+    registry.register(Box::new(TaskClaimTool { manager }));
 }
