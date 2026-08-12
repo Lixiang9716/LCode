@@ -22,3 +22,7 @@
 # OS files
 Thumbs.db
 ehthumbs.db
+
+# Test artifacts
+.transcripts/
+*.transcript.jsonl

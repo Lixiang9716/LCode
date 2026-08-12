@@ -5,9 +5,7 @@
 //! Kept in a separate file so `executor.rs` stays under the 500-line
 //! style limit.
 
-use crate::agent::compaction::{
-    auto_compact, estimate_tokens, micro_compact, AUTO_COMPACT_THRESHOLD,
-};
+use crate::agent::compaction::{auto_compact, micro_compact, AUTO_COMPACT_THRESHOLD};
 use crate::agent::event::AgentEvent;
 use crate::agent::executor::{Executor, TODO_NAG_AFTER_TURNS};
 use crate::agent::ConversationMemory;
@@ -66,8 +64,9 @@ impl Executor {
         // Micro pass: replace old large tool results with placeholders.
         micro_compact(memory.messages_mut(), self.provider.as_ref());
 
-        let over_budget =
-            estimate_tokens(&memory.approximate_tokens().to_string()) > AUTO_COMPACT_THRESHOLD;
+        // Compare the approximate token count directly (estimating the
+        // digit-string of the count would never exceed the threshold).
+        let over_budget = memory.approximate_tokens() > AUTO_COMPACT_THRESHOLD;
         if requested_focus.is_some() || over_budget {
             let workspace = std::env::current_dir().unwrap_or_default();
             let summary = auto_compact(
