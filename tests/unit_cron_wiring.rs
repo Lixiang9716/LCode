@@ -43,6 +43,8 @@ fn executor_with_cron(
                 cron,
                 mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
+                memory_store: None,
+                team_bus: None,
             },
         ),
         events_rx,

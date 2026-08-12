@@ -86,6 +86,36 @@ impl Executor {
         Ok(())
     }
 
+    /// G3 (s09): at session end, extract durable memories from the
+    /// conversation via the LLM and consolidate the store. Failures are
+    /// logged, never fatal.
+    pub(crate) async fn persist_memories(&self, memory: &ConversationMemory) {
+        let Some(store) = &self.memory_store else { return };
+        let text = serde_json::to_string(memory.messages()).unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        match store.extract(&text, self.provider.as_ref()).await {
+            Ok(n) => tracing::info!(memories = n, "extracted session memories"),
+            Err(e) => tracing::debug!(error = %e, "memory extraction skipped"),
+        }
+        if let Err(e) = store.consolidate(self.provider.as_ref()).await {
+            tracing::debug!(error = %e, "memory consolidation skipped");
+        }
+    }
+
+    /// Drain the lead's team inbox into the conversation (s09-s17):
+    /// teammate replies and protocol responses arrive before the next
+    /// LLM call, formatted by [`MessageBus::drain_lead_inbox`].
+    pub(crate) fn inject_lead_inbox(&self, memory: &mut ConversationMemory) {
+        if let Some(bus) = &self.team_bus {
+            let (_msgs, text) = bus.drain_lead_inbox();
+            if !text.is_empty() {
+                memory.add_user(text);
+            }
+        }
+    }
+
     /// Publish a nag event when the model has not updated its todos for
     /// several turns; the renderer surfaces it to the user (s03).
     pub(crate) fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {

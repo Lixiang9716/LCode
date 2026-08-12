@@ -134,6 +134,8 @@ fn build_session(
     Arc<Mutex<CronScheduler>>,
     Arc<Mutex<McpRegistry>>,
     Arc<BackgroundManager>,
+    Arc<crate::agent::MemoryStore>,
+    Arc<crate::agent::MessageBus>,
 )> {
     let mut registry = ToolRegistry::new(config)?;
 
@@ -168,6 +170,8 @@ fn build_session(
     let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
     mcp::register(&mut registry, mcp_registry.clone());
     let _ = memory_store::register(&mut registry, &workspace, provider.clone());
+    let memory_store = Arc::new(crate::agent::MemoryStore::new(&workspace)?);
+    let team_bus = Arc::new(crate::agent::MessageBus::new(&workspace));
 
     Ok((
         registry,
@@ -180,6 +184,8 @@ fn build_session(
         cron,
         mcp_registry,
         background,
+        memory_store,
+        team_bus,
     ))
 }
 
@@ -217,6 +223,8 @@ pub async fn run_task_with_memory(
         cron,
         mcp_registry,
         background,
+        memory_store,
+        team_bus,
     ) = build_session(config, provider.clone())?;
 
     // G3 (s09): cross-session memory. The store registers four tools;
@@ -237,12 +245,57 @@ pub async fn run_task_with_memory(
         Some(hooks.clone()),
     );
 
-    // Spawn the default renderer (stdout + stdin approval prompts)
+    // Run the session: renderer + memory assembly + executor loop.
+    execute_session(
+        config,
+        task,
+        max_turns,
+        stream,
+        auto_approve,
+        initial_memory,
+        registry,
+        hooks,
+        runtime,
+        events_rx,
+        commands_tx,
+        workspace,
+        compact_request,
+        cron,
+        mcp_registry,
+        background,
+        memory_store,
+        team_bus,
+    )
+    .await
+}
+
+/// Execute a fully assembled session: spawn the renderer, build the
+/// conversation memory (skills layer-1 or restored snapshot), construct
+/// the executor with the session state, and run the loop.
+#[allow(clippy::too_many_arguments)]
+async fn execute_session(
+    config: &Config,
+    task: &str,
+    max_turns: u32,
+    stream: bool,
+    auto_approve: bool,
+    initial_memory: Option<ConversationMemory>,
+    registry: ToolRegistry,
+    hooks: Arc<HookRegistry>,
+    runtime: AgentRuntime,
+    events_rx: tokio::sync::broadcast::Receiver<AgentEvent>,
+    commands_tx: tokio::sync::mpsc::Sender<AgentCommand>,
+    workspace: std::path::PathBuf,
+    compact_request: Arc<Mutex<Option<String>>>,
+    cron: Arc<Mutex<CronScheduler>>,
+    mcp_registry: Arc<Mutex<McpRegistry>>,
+    background: Arc<BackgroundManager>,
+    memory_store: Arc<crate::agent::MemoryStore>,
+    team_bus: Arc<crate::agent::MessageBus>,
+) -> anyhow::Result<()> {
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
-    // Create agent components
-    // G9 (s07): skill layer-1 descriptions join the base system prompt
-    // (the executor's prompt assembly carries them from turn one);
+    // G9 (s07): skill layer-1 descriptions join the base system prompt;
     // `resume` restores an existing conversation instead.
     let mut skill_registry = SkillRegistry::default();
     if let Err(e) = skill_registry.load_from(&workspace.join("skills")) {
@@ -253,6 +306,7 @@ pub async fn run_task_with_memory(
         Some(memory) => memory,
         None => ConversationMemory::new(system_prompt),
     };
+
     let planner = Planner::new(config.agent.max_turns);
     let session = crate::agent::executor::SessionState {
         todo: Arc::new(Mutex::new(TodoManager::default())),
@@ -261,21 +315,14 @@ pub async fn run_task_with_memory(
         cron,
         mcp: mcp_registry,
         compact_request,
+        memory_store: Some(memory_store),
+        team_bus: Some(team_bus),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
-
-    // Start the task
-    tracing::info!("Starting task: {}", task);
-    // `stream` flows from `lcode run --stream` (G11): the provider's
-    // `chat_stream` (real SSE for openai/anthropic) publishes token
-    // deltas as they arrive; `false` keeps the plain chat call (the
-    // REPL default).
     executor.run(task, &planner, memory, max_turns, stream).await?;
 
-    // Wait for the renderer to drain the remaining events
     let _ = renderer.await;
-
     Ok(())
 }
 

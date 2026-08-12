@@ -64,6 +64,8 @@ fn streaming_executor() -> (Executor, tokio::sync::broadcast::Receiver<AgentEven
                 cron,
                 mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
+                memory_store: None,
+                team_bus: None,
             },
         ),
         events_rx,
@@ -131,6 +133,8 @@ async fn test_non_streaming_run_does_not_call_chat_stream() {
             cron,
             mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
             compact_request: Arc::new(std::sync::Mutex::new(None)),
+            memory_store: None,
+            team_bus: None,
         },
     );
 

@@ -41,6 +41,12 @@ pub struct SessionState {
     /// Compact-request channel written by the `compact` tool, read by
     /// the executor at the next turn boundary (s06 manual layer).
     pub compact_request: Arc<Mutex<Option<String>>>,
+    /// Cross-session memory store (s09): index injected into the prompt,
+    /// extract/consolidate run at session end.
+    pub memory_store: Option<Arc<crate::agent::MemoryStore>>,
+    /// Team message bus (s09-s17): the lead's inbox is drained at
+    /// turn-start so teammate replies reach the main conversation.
+    pub team_bus: Option<Arc<crate::agent::MessageBus>>,
 }
 
 /// The executor drives the agent loop.
@@ -62,6 +68,8 @@ pub struct Executor {
     pub(crate) cron: Arc<Mutex<CronScheduler>>,
     pub(crate) mcp: Arc<Mutex<McpRegistry>>,
     pub(crate) compact_request: Arc<Mutex<Option<String>>>,
+    pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
+    pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
 }
 
 impl Executor {
@@ -84,6 +92,8 @@ impl Executor {
             cron: session.cron,
             mcp: session.mcp,
             compact_request: session.compact_request,
+            memory_store: session.memory_store,
+            team_bus: session.team_bus,
         }
     }
 
@@ -125,6 +135,10 @@ impl Executor {
                 prompt: None,
             };
             self.hooks.run(&stop_ctx);
+
+            // G3 (s09): at session end, extract durable memories from the
+            // conversation and consolidate the memory store.
+            self.persist_memories(&memory).await;
 
             let summary = response_usage_summary(&memory);
             self.runtime.publish(AgentEvent::TaskFinished {
@@ -209,6 +223,7 @@ impl Executor {
             // triggers (s14) arrive before the next LLM call.
             self.inject_background_results(memory);
             self.inject_cron_triggers(memory);
+            self.inject_lead_inbox(memory);
 
             // Dynamic tool pool (s19) + context compaction (s06).
             let tool_defs = self.tool_pool();
