@@ -17,4 +17,5 @@ pub mod config;
 pub mod llm;
 pub mod repl;
 pub mod tools;
+pub mod update;
 pub mod utils;

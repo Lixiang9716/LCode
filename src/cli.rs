@@ -56,6 +56,17 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Update LCode to the latest release from GitHub
+    Update {
+        /// Only check for a new version; don't install
+        #[arg(long)]
+        check: bool,
+
+        /// Reinstall even if already up to date
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

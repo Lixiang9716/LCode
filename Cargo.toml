@@ -56,6 +56,10 @@ tokio-stream = "0.1"
 # Exact token counting (tiktoken cl100k_base BPE tokenizer)
 tiktoken-rs = "0.6"
 
+# Self-update (lcode update): tar.gz extraction
+flate2 = "1"
+tar = "0.4"
+
 # File system walker for search tools
 walkdir = "2"
 
@@ -83,3 +87,4 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
