@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0](https://github.com/Lixiang9716/LCode/compare/v0.7.0...v0.8.0) (2026-08-12)
+
+
+### Features
+
+* **release:** add linux aarch64 binaries (gnu + musl) ([5eb7963](https://github.com/Lixiang9716/LCode/commit/5eb796377f26f97d815a86c5d03cc4f3b222d40a))
+* **release:** add linux aarch64 binaries (gnu + musl) ([867c2bd](https://github.com/Lixiang9716/LCode/commit/867c2bda8b7015e254cd33be048178bd719c14bb))
+
+## [0.7.0](https://github.com/Lixiang9716/LCode/compare/v0.6.0...v0.7.0) (2026-08-12)
+
+
+### Features
+
+* add lcode update (self-update from GitHub releases) ([8154c04](https://github.com/Lixiang9716/LCode/commit/8154c04907a1061269afc4dca3f869a3af2f8ae9))
+* add lcode update command (self-update from GitHub releases) ([12890a4](https://github.com/Lixiang9716/LCode/commit/12890a465efda700c7f8171a8aa5f84e753d1b1e))
+
 ## [0.6.0](https://github.com/Lixiang9716/LCode/compare/v0.5.0...v0.6.0) (2026-08-12)
 
 
