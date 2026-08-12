@@ -5,8 +5,8 @@
 //! tests exercise only the crate's public API from outside the crate.
 
 use lcode::agent::{
-    AgentEvent, AgentRuntime, BackgroundManager, ConversationMemory, Executor, PlanStatus,
-    PlanStep, Planner, StepStatus, TodoManager,
+    AgentEvent, AgentRuntime, BackgroundManager, ConversationMemory, CronScheduler, Executor,
+    PlanStatus, PlanStep, Planner, StepStatus, TodoManager,
 };
 use lcode::config::Config;
 use lcode::llm::provider::MockLlmProvider;
@@ -19,9 +19,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-// ---------------------------------------------------------------------------
 // Executor: the agent loop
-// ---------------------------------------------------------------------------
 
 /// Build a `write_file` tool call with the given id and arguments.
 fn write_file_call(id: &str, args: &str) -> ToolCallRequest {
@@ -68,16 +66,21 @@ fn executor_with_queue(
     mock.expect_validate().times(0..).returning(|| Ok(()));
 
     let (runtime, events_rx, _commands_tx) = AgentRuntime::new();
+    let tmp = tempfile::tempdir().expect("tempdir for cron scheduler");
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&tmp.path().to_path_buf())));
     (
         Executor::new(
             Box::new(mock),
             registry,
             true,
             runtime,
-            Arc::new(Mutex::new(TodoManager::default())),
-            Arc::new(BackgroundManager::default()),
-            Arc::new(lcode::agent::HookRegistry::default()),
-            Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+            lcode::agent::SessionState {
+                todo: Arc::new(Mutex::new(TodoManager::default())),
+                background: Arc::new(BackgroundManager::default()),
+                hooks: Arc::new(lcode::agent::HookRegistry::default()),
+                cron,
+                mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+            },
         ),
         call_count,
         events_rx,
@@ -119,8 +122,10 @@ async fn test_run_completes_on_stop_and_records_assistant_message() {
 
     let memory = ConversationMemory::new("You are a helpful assistant.".to_string());
     let planner = Planner::new(50);
-    let memory =
-        executor.run("Write a test", &planner, memory, 10).await.expect("run should succeed");
+    let memory = executor
+        .run("Write a test", &planner, memory, 10, false)
+        .await
+        .expect("run should succeed");
 
     // Exactly one LLM call, receiving system + user context.
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -174,7 +179,7 @@ async fn test_tool_call_executes_write_file_in_tempdir() {
 
     let memory = ConversationMemory::new("sys".to_string());
     let planner = Planner::new(50);
-    let result = executor.run("Write a file", &planner, memory, 10).await;
+    let result = executor.run("Write a file", &planner, memory, 10, false).await;
     // Restore cwd before any assertion/panic so other tests are unaffected.
     std::env::set_current_dir(&original_cwd).expect("restore cwd");
     let memory = result.expect("run should succeed");
@@ -237,7 +242,7 @@ async fn test_max_turns_truncates_never_finishing_loop() {
 
     let memory = ConversationMemory::new("sys".to_string());
     let planner = Planner::new(50);
-    let result = executor.run("loop", &planner, memory, 3).await;
+    let result = executor.run("loop", &planner, memory, 3, false).await;
     std::env::set_current_dir(&original_cwd).expect("restore cwd");
     result.expect("run should stop gracefully at max_turns");
 
@@ -254,9 +259,7 @@ async fn test_max_turns_truncates_never_finishing_loop() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ConversationMemory: message management and compaction
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_memory_add_messages() {
@@ -347,9 +350,7 @@ fn test_compact_if_needed_keeps_small_conversations() {
     assert_eq!(mem.messages().len(), 4);
 }
 
-// ---------------------------------------------------------------------------
 // Planner: plan creation, progress, and dependency ordering
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_simple_plan() {

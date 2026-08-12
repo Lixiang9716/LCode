@@ -60,15 +60,20 @@ async fn mcp_connected_server_appears_in_next_turn_tool_pool() {
         registry,
         true,
         runtime,
-        Arc::new(Mutex::new(lcode::agent::TodoManager::default())),
-        Arc::new(lcode::agent::BackgroundManager::default()),
-        Arc::new(lcode::agent::HookRegistry::default()),
-        mcp,
+        lcode::agent::SessionState {
+            todo: Arc::new(Mutex::new(lcode::agent::TodoManager::default())),
+            background: Arc::new(lcode::agent::BackgroundManager::default()),
+            hooks: Arc::new(lcode::agent::HookRegistry::default()),
+            cron: Arc::new(std::sync::Mutex::new(lcode::agent::CronScheduler::new(
+                &std::path::PathBuf::from("."),
+            ))),
+            mcp,
+        },
     );
 
     let memory = ConversationMemory::new("sys".to_string());
     let planner = Planner::new(50);
-    executor.run("inspect", &planner, memory, 5).await.expect("run");
+    executor.run("inspect", &planner, memory, 5, false).await.expect("run");
 
     let tools = seen_tools.lock().unwrap();
     assert!(!tools.is_empty(), "provider should have been called");
@@ -118,15 +123,20 @@ async fn mcp_tool_call_routes_through_mcp_registry() {
         registry,
         true,
         runtime,
-        Arc::new(Mutex::new(lcode::agent::TodoManager::default())),
-        Arc::new(lcode::agent::BackgroundManager::default()),
-        Arc::new(lcode::agent::HookRegistry::default()),
-        mcp,
+        lcode::agent::SessionState {
+            todo: Arc::new(Mutex::new(lcode::agent::TodoManager::default())),
+            background: Arc::new(lcode::agent::BackgroundManager::default()),
+            hooks: Arc::new(lcode::agent::HookRegistry::default()),
+            cron: Arc::new(std::sync::Mutex::new(lcode::agent::CronScheduler::new(
+                &std::path::PathBuf::from("."),
+            ))),
+            mcp,
+        },
     );
 
     let memory = ConversationMemory::new("sys".to_string());
     let planner = Planner::new(50);
-    let memory = executor.run("use mcp", &planner, memory, 5).await.expect("run");
+    let memory = executor.run("use mcp", &planner, memory, 5, false).await.expect("run");
 
     // The MCP call result must be recorded in the conversation.
     let msgs = memory.messages();

@@ -42,6 +42,7 @@ mod retry;
 mod runtime;
 mod session;
 mod skill;
+mod stream;
 mod subagent;
 mod task;
 mod team;
@@ -57,7 +58,7 @@ pub use compaction::{
 };
 pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
 pub use event::{AgentCommand, AgentEvent};
-pub use executor::Executor;
+pub use executor::{Executor, SessionState};
 pub use hooks::{
     deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
 };
@@ -117,7 +118,10 @@ pub async fn run_task(
     task::register(&mut registry, &workspace);
     team::register(&mut registry, &workspace);
     worktree::register(&mut registry, &workspace);
-    cron::register(&mut registry, &workspace);
+    // Cron (s14): one scheduler shared by the three cron tools and the
+    // executor, so tools manage jobs while the loop fires due ones.
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
+    cron::register(&mut registry, cron.clone());
     let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
     mcp::register(&mut registry, mcp_registry.clone());
 
@@ -133,20 +137,16 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor = Executor::new(
-        provider,
-        registry,
-        auto_approve,
-        runtime,
-        todo,
-        background,
-        hooks,
-        mcp_registry,
-    );
+    let session =
+        crate::agent::executor::SessionState { todo, background, hooks, cron, mcp: mcp_registry };
+    let mut executor = Executor::new(provider, registry, auto_approve, runtime, session);
 
     // Start the task
     tracing::info!("Starting task: {}", task);
-    executor.run(task, &planner, memory, max_turns).await?;
+    // `stream = false` keeps the plain chat call (default behavior);
+    // streaming (typewriter) is a REPL enhancement the serve/session
+    // layer can opt into via the executor's `run(.., stream)` flag.
+    executor.run(task, &planner, memory, max_turns, false).await?;
 
     // Wait for the renderer to drain the remaining events
     let _ = renderer.await;

@@ -9,8 +9,8 @@
 use crate::agent::event::AgentEvent;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
-    BackgroundManager, ConversationMemory, HookContext, HookDecision, HookPoint, HookRegistry,
-    McpRegistry, Planner, TodoManager,
+    BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
+    HookRegistry, McpRegistry, Planner, TodoManager,
 };
 use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
 use crate::tools::{ToolRegistry, ToolResult};
@@ -29,6 +29,16 @@ enum LoopControl {
 /// Number of turns without a todo update before a nag is injected.
 const TODO_NAG_AFTER_TURNS: u32 = 3;
 
+/// Session-scoped state shared between the executor and the session
+/// tools (todo/skill/task/background/team/worktree/cron/mcp).
+pub struct SessionState {
+    pub todo: Arc<Mutex<TodoManager>>,
+    pub background: Arc<BackgroundManager>,
+    pub hooks: Arc<HookRegistry>,
+    pub cron: Arc<Mutex<CronScheduler>>,
+    pub mcp: Arc<Mutex<McpRegistry>>,
+}
+
 /// The executor drives the agent loop.
 ///
 /// Owns the LLM provider, tool registry, runtime, and the session-scoped
@@ -36,13 +46,16 @@ const TODO_NAG_AFTER_TURNS: u32 = 3;
 /// turn-start notification draining) so it can be constructed with mocks
 /// in tests.
 pub struct Executor {
-    provider: Box<dyn LlmProvider>,
+    pub(crate) provider: Box<dyn LlmProvider>,
     registry: ToolRegistry,
     auto_approve: bool,
-    runtime: AgentRuntime,
+    pub(crate) runtime: AgentRuntime,
     todo: Arc<Mutex<TodoManager>>,
     background: Arc<BackgroundManager>,
     hooks: Arc<HookRegistry>,
+    /// Shared cron scheduler: the cron tools manage jobs, the executor
+    /// fires due ones by injecting them into the conversation (s14).
+    cron: Arc<Mutex<CronScheduler>>,
     mcp: Arc<Mutex<McpRegistry>>,
 }
 
@@ -53,12 +66,19 @@ impl Executor {
         registry: ToolRegistry,
         auto_approve: bool,
         runtime: AgentRuntime,
-        todo: Arc<Mutex<TodoManager>>,
-        background: Arc<BackgroundManager>,
-        hooks: Arc<HookRegistry>,
-        mcp: Arc<Mutex<McpRegistry>>,
+        session: SessionState,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime, todo, background, hooks, mcp }
+        Self {
+            provider,
+            registry,
+            auto_approve,
+            runtime,
+            todo: session.todo,
+            background: session.background,
+            hooks: session.hooks,
+            cron: session.cron,
+            mcp: session.mcp,
+        }
     }
 
     /// Run the agent loop for a given task.
@@ -66,12 +86,19 @@ impl Executor {
     /// Publishes session/turn/tool events on the runtime event bus and
     /// returns the conversation memory after the run so callers (and
     /// tests) can inspect the final message history.
+    ///
+    /// `stream` toggles the LLM call style: `false` (the default) uses the
+    /// plain `chat` call; `true` streams token deltas through
+    /// [`LlmProvider::chat_stream`], publishing each delta as a
+    /// [`AgentEvent::TextGenerated`] so observers (e.g. the REPL) get a
+    /// typewriter effect.
     pub async fn run(
         &mut self,
         task: &str,
         planner: &Planner,
         mut memory: ConversationMemory,
         max_turns: u32,
+        stream: bool,
     ) -> anyhow::Result<ConversationMemory> {
         // The planner output is currently informational; keep the binding
         // explicit for future use.
@@ -105,6 +132,11 @@ impl Executor {
             // LLM call, no polling needed).
             self.inject_background_results(&mut memory);
 
+            // Turn-start injection: fire due cron jobs into the
+            // conversation (s14: pull-based, checked when the agent is
+            // idle so a one-shot agent still honors schedules).
+            self.inject_cron_triggers(&mut memory);
+
             // Assemble the tool pool per turn: built-ins + connected MCP
             // tools (s19 — dynamic pool, `connect_mcp` takes effect on
             // the next turn).
@@ -113,11 +145,15 @@ impl Executor {
             // Get the current conversation context
             let context = memory.get_context();
 
-            // Send to LLM
-            let response = self.provider.chat(&context, &tool_defs).await?;
+            // Send to LLM: stream deltas for a typewriter effect when
+            // `stream` is set, otherwise the plain chat call.
+            let response = self.call_llm(&context, &tool_defs, stream).await?;
 
-            // Handle the response
-            let finished = match self.handle_response(response, &mut memory).await? {
+            // In streaming mode the text was already published
+            // delta-by-delta (or as a streamed preview before a tool-call
+            // fallback), so handle_response must not re-publish it as a
+            // single block.
+            let finished = match self.handle_response(response, &mut memory, stream).await? {
                 LoopControl::Stop => true,
                 LoopControl::Abort => {
                     abort_session(&self.runtime, &mut aborted);
@@ -171,6 +207,25 @@ impl Executor {
         tracing::debug!(count = notifications.len(), "injected background results");
     }
 
+    /// Fire due cron jobs into the conversation (s14 turn-start
+    /// injection): lock the shared scheduler, collect the prompts due at
+    /// the current minute, and add them as a user message so the model
+    /// sees them before the next LLM call. Non-recurring jobs are removed
+    /// by `due_prompts` after firing — intended behavior.
+    fn inject_cron_triggers(&self, memory: &mut ConversationMemory) {
+        let mut scheduler = self.cron.lock().unwrap();
+        // `tick()` uses the real clock (`due_prompts(None)`).
+        let due = scheduler.tick();
+        if due.is_empty() {
+            return;
+        }
+        let body = due.join("\n");
+        memory.add_user(format!("<cron-trigger>\n{}\n</cron-trigger>", body));
+        tracing::debug!(count = due.len(), "injected cron triggers");
+    }
+
+    /// Ask the LLM for a response: streamed when `stream` is set, plain
+    /// chat otherwise.
     /// Publish a nag event when the model has not updated its todos for
     /// several turns; the renderer surfaces it to the user (s03).
     fn maybe_nag_todo(&self, memory: &mut ConversationMemory) {
@@ -189,16 +244,23 @@ impl Executor {
     ///
     /// Executes any requested tool calls (recording results in memory) or
     /// publishes the final answer. Returns the loop control signal.
+    ///
+    /// `text_already_published` suppresses the one-shot text publish: the
+    /// streaming path emits the text as it arrives, so re-publishing the
+    /// accumulated block would print it twice in the REPL.
     async fn handle_response(
         &mut self,
         response: crate::llm::LlmResponse,
         memory: &mut ConversationMemory,
+        text_already_published: bool,
     ) -> anyhow::Result<LoopControl> {
         match response.finish_reason {
             FinishReason::ToolCalls => {
                 if let Some(ref tool_calls) = response.tool_calls {
-                    // Publish the assistant's text content if any
-                    publish_text(&self.runtime, &response.content);
+                    // Publish the assistant's text content if any (in
+                    // streaming mode this was already streamed or shown
+                    // as a preview before the fallback chat call).
+                    publish_text_unless(&self.runtime, &response.content, text_already_published);
 
                     // Add the assistant message with tool calls to memory
                     memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
@@ -211,7 +273,7 @@ impl Executor {
             }
             FinishReason::Stop | FinishReason::Length => {
                 // Final response — no more tool calls
-                publish_text(&self.runtime, &response.content);
+                publish_text_unless(&self.runtime, &response.content, text_already_published);
                 memory.add_assistant(response.content);
                 Ok(LoopControl::Stop)
             }
@@ -223,7 +285,7 @@ impl Executor {
             }
             FinishReason::Unknown => {
                 // Assume stop — just output the content
-                publish_text(&self.runtime, &response.content);
+                publish_text_unless(&self.runtime, &response.content, text_already_published);
                 Ok(LoopControl::Stop)
             }
         }
@@ -355,6 +417,15 @@ impl Executor {
 fn publish_text(runtime: &AgentRuntime, content: &str) {
     if !content.is_empty() {
         runtime.publish(AgentEvent::TextGenerated { content: content.to_string() });
+    }
+}
+
+/// [`publish_text`], unless the text was already published (streaming
+/// mode emits it delta-by-delta, so a second one-shot publish would print
+/// it twice in the REPL).
+fn publish_text_unless(runtime: &AgentRuntime, content: &str, already_published: bool) {
+    if !already_published {
+        publish_text(runtime, content);
     }
 }
 
