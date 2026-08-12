@@ -26,6 +26,20 @@ LCode is an AI-powered coding assistant that operates directly in your terminal.
 
 ### Installation
 
+**One-line installer** (downloads the latest prebuilt binary):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Lixiang9716/LCode/main/install.sh | bash
+```
+
+Or with a custom directory:
+
+```bash
+LCODE_INSTALL_DIR=~/tools bash install.sh
+```
+
+**From source**:
+
 ```bash
 # Clone the repository
 git clone https://github.com/Lixiang9716/LCode.git
