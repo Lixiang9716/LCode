@@ -77,6 +77,7 @@ fn executor_with_queue(
             Arc::new(Mutex::new(TodoManager::default())),
             Arc::new(BackgroundManager::default()),
             Arc::new(lcode::agent::HookRegistry::default()),
+            Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
         ),
         call_count,
         events_rx,

@@ -118,7 +118,8 @@ pub async fn run_task(
     team::register(&mut registry, &workspace);
     worktree::register(&mut registry, &workspace);
     cron::register(&mut registry, &workspace);
-    mcp::register(&mut registry);
+    let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
+    mcp::register(&mut registry, mcp_registry.clone());
 
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
@@ -132,8 +133,16 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let mut executor =
-        Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks);
+    let mut executor = Executor::new(
+        provider,
+        registry,
+        auto_approve,
+        runtime,
+        todo,
+        background,
+        hooks,
+        mcp_registry,
+    );
 
     // Start the task
     tracing::info!("Starting task: {}", task);

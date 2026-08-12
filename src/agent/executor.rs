@@ -10,10 +10,10 @@ use crate::agent::event::AgentEvent;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
     BackgroundManager, ConversationMemory, HookContext, HookDecision, HookPoint, HookRegistry,
-    Planner, TodoManager,
+    McpRegistry, Planner, TodoManager,
 };
 use crate::llm::{FinishReason, LlmProvider, ToolDefinition};
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolRegistry, ToolResult};
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
@@ -43,6 +43,7 @@ pub struct Executor {
     todo: Arc<Mutex<TodoManager>>,
     background: Arc<BackgroundManager>,
     hooks: Arc<HookRegistry>,
+    mcp: Arc<Mutex<McpRegistry>>,
 }
 
 impl Executor {
@@ -55,8 +56,9 @@ impl Executor {
         todo: Arc<Mutex<TodoManager>>,
         background: Arc<BackgroundManager>,
         hooks: Arc<HookRegistry>,
+        mcp: Arc<Mutex<McpRegistry>>,
     ) -> Self {
-        Self { provider, registry, auto_approve, runtime, todo, background, hooks }
+        Self { provider, registry, auto_approve, runtime, todo, background, hooks, mcp }
     }
 
     /// Run the agent loop for a given task.
@@ -75,8 +77,6 @@ impl Executor {
         // explicit for future use.
         let _plan = planner.create_plan(task);
         memory.add_user(format!("Task: {}", task));
-
-        let tool_defs: Vec<ToolDefinition> = self.registry.definitions();
 
         let mut turn = 0u32;
 
@@ -104,6 +104,11 @@ impl Executor {
             // into the conversation (s08: results arrive before the next
             // LLM call, no polling needed).
             self.inject_background_results(&mut memory);
+
+            // Assemble the tool pool per turn: built-ins + connected MCP
+            // tools (s19 — dynamic pool, `connect_mcp` takes effect on
+            // the next turn).
+            let tool_defs = self.tool_pool();
 
             // Get the current conversation context
             let context = memory.get_context();
@@ -142,6 +147,16 @@ impl Executor {
         }
 
         Ok(memory)
+    }
+
+    /// Assemble the per-turn tool pool: built-in tools plus connected MCP
+    /// tools (namespaced `mcp__{server}__{tool}`, s19).
+    fn tool_pool(&self) -> Vec<ToolDefinition> {
+        let mut defs = self.registry.definitions();
+        if let Ok(mcp) = self.mcp.lock() {
+            defs.extend(mcp.tool_definitions());
+        }
+        defs
     }
 
     /// Drain completed background-task notifications into the conversation
@@ -291,8 +306,19 @@ impl Executor {
             }
         }
 
-        // Execute the tool
-        match self.registry.execute(tool_name, &parsed_args) {
+        // Execute the tool (MCP namespaced tools go to the MCP registry;
+        // McpRegistry::call expects the full `mcp__{server}__{tool}` name)
+        let mcp_result = if tool_name.starts_with("mcp__") {
+            Some(self.mcp.lock().unwrap().call(tool_name, &parsed_args))
+        } else {
+            None
+        };
+        let result = match mcp_result {
+            Some(Ok(output)) => Ok(ToolResult::ok(output)),
+            Some(Err(e)) => Err(e),
+            None => self.registry.execute(tool_name, &parsed_args),
+        };
+        match result {
             Ok(result) => {
                 let result_str = format!("{}", result);
                 self.runtime.publish(AgentEvent::ToolCallExecuted {
