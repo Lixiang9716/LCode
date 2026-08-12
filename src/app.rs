@@ -22,6 +22,9 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Config { action } => {
             crate::config::handle_command(action)?;
         }
+        Command::Update { check, force } => {
+            crate::update::run(check, force).await?;
+        }
     }
     Ok(())
 }
