@@ -69,6 +69,8 @@ async fn mcp_connected_server_appears_in_next_turn_tool_pool() {
             ))),
             mcp,
             compact_request: Arc::new(Mutex::new(None)),
+            memory_store: None,
+            team_bus: None,
         },
     );
 
@@ -133,6 +135,8 @@ async fn mcp_tool_call_routes_through_mcp_registry() {
             ))),
             mcp,
             compact_request: Arc::new(Mutex::new(None)),
+            memory_store: None,
+            team_bus: None,
         },
     );
 

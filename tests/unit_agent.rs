@@ -40,7 +40,6 @@ fn response(
 
 /// Build an executor backed by a mock provider that serves responses
 /// from a queue. Every received message batch is recorded into `seen`.
-///
 /// Returns the executor, the LLM call counter, and the event stream
 /// subscription for asserting the published agent events.
 fn executor_with_queue(
@@ -81,6 +80,8 @@ fn executor_with_queue(
                 cron,
                 mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
+                memory_store: None,
+                team_bus: None,
             },
         ),
         call_count,
