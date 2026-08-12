@@ -3,6 +3,7 @@
 //! handshake, and the basic-version teammate loop (tool echo, no LLM).
 
 use lcode::agent::{MessageBus, TeamMessage, TeammateManager, TeammateState, VALID_MSG_TYPES};
+use lcode::llm::provider::MockLlmProvider;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -233,7 +234,12 @@ fn register_wires_events_to_send_and_spawn() {
 
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
     let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
-    lcode::agent::register_team_tools(&mut registry, &ws, Some(tx));
+    lcode::agent::register_team_tools(
+        &mut registry,
+        &ws,
+        std::sync::Arc::new(MockLlmProvider::new()),
+        Some(tx),
+    );
 
     // send_message publishes TeamMessageSent.
     let result = registry
@@ -271,7 +277,12 @@ fn register_without_events_still_registers_tools() {
     let tmp = tempdir().unwrap();
     let ws = tmp.path().to_path_buf();
     let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
-    lcode::agent::register_team_tools(&mut registry, &ws, None);
+    lcode::agent::register_team_tools(
+        &mut registry,
+        &ws,
+        std::sync::Arc::new(MockLlmProvider::new()),
+        None,
+    );
     for tool in ["spawn_teammate", "send_message", "read_inbox", "list_teammates"] {
         assert!(registry.list_tools().contains(&tool), "{tool} must be registered");
     }

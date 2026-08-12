@@ -241,7 +241,6 @@ impl TeammateManager {
     /// the member in `.team/config.json` and starts [`run_teammate_loop`]
     /// as a tokio task (dropped with the runtime, mirroring s15 daemon
     /// threads) when a tokio runtime exists.
-
     pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
         if name.is_empty() {
             anyhow::bail!("Teammate name must not be empty");
@@ -458,7 +457,6 @@ pub fn register(
     let mut bus = MessageBus::new(workspace);
     if let Some(tx) = &events {
         bus.set_events(tx.clone());
-
     }
     let bus = Arc::new(bus);
     let protocol = Arc::new(ProtocolManager::default());

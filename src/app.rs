@@ -70,6 +70,7 @@ async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()
                 &snapshot.task,
                 cfg.agent.max_turns,
                 cfg.agent.require_approval,
+                false,
                 &cfg,
                 Some(memory),
             )

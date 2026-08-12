@@ -209,6 +209,7 @@ async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
                 &snapshot.task,
                 config.agent.max_turns,
                 config.agent.require_approval,
+                false,
                 config,
                 Some(memory),
             )

@@ -10,23 +10,16 @@ use crate::llm::{
     ToolDefinition, Usage,
 };
 use async_trait::async_trait;
-<<<<<<< HEAD
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
-=======
 use futures::stream::BoxStream;
 use futures::StreamExt;
->>>>>>> origin/task/cons-stream-mcp
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// OpenAI / OpenAI-compatible provider.
 pub struct OpenAiProvider {
     api_key: String,
-    /// Switched at runtime via [`LlmProvider::set_model`] (fallback
-    /// failover); interior mutability because `chat` takes `&self`.
     model: Mutex<String>,
     api_base: String,
-    /// Current max_tokens budget; raised at runtime via
-    /// [`LlmProvider::set_max_tokens`] when a response is truncated.
     max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
@@ -63,32 +56,14 @@ impl LlmProvider for OpenAiProvider {
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-<<<<<<< HEAD
-
-        // Build the request body
-        let model = self.model.lock().unwrap().clone();
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
-            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
-            "temperature": self.temperature,
-        });
-
-        if !tools.is_empty() {
-            body["tools"] = serde_json::to_value(tools)?;
-            body["tool_choice"] = serde_json::json!("auto");
-        }
-
-=======
         let body = build_body(
-            self.model.clone(),
-            self.max_tokens,
+            self.model.lock().unwrap().clone(),
+            self.max_tokens.load(Ordering::Relaxed),
             self.temperature,
             messages,
             tools,
             false,
         );
->>>>>>> origin/task/cons-stream-mcp
         let response = self
             .client
             .post(&url)
@@ -119,8 +94,8 @@ impl LlmProvider for OpenAiProvider {
     ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
         let body = build_body(
-            self.model.clone(),
-            self.max_tokens,
+            self.model.lock().unwrap().clone(),
+            self.max_tokens.load(Ordering::Relaxed),
             self.temperature,
             messages,
             tools,
@@ -152,6 +127,14 @@ impl LlmProvider for OpenAiProvider {
         Ok(Box::pin(stream))
     }
 
+    fn set_max_tokens(&self, n: u32) {
+        self.max_tokens.store(n, Ordering::Relaxed);
+    }
+
+    fn set_model(&self, model: String) {
+        *self.model.lock().unwrap() = model;
+    }
+
     fn name(&self) -> &str {
         "openai"
     }
@@ -164,14 +147,6 @@ impl LlmProvider for OpenAiProvider {
             anyhow::bail!("OpenAI model is not set");
         }
         Ok(())
-    }
-
-    fn set_max_tokens(&self, n: u32) {
-        self.max_tokens.store(n, Ordering::Relaxed);
-    }
-
-    fn set_model(&self, model: String) {
-        *self.model.lock().unwrap() = model;
     }
 }
 

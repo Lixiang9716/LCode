@@ -94,38 +94,19 @@ pub use task::{
     Task, TaskClaimTool, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool,
 };
 pub use team::{
-<<<<<<< HEAD
-    MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate, TeammateManager, TeammateState,
-    VALID_MSG_TYPES,
+    register as register_team_tools, MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate,
+    TeammateManager, TeammateState, VALID_MSG_TYPES,
 };
 pub use teammate::{
     handle_teammate_message, reinject_identity, run_teammate_loop, TeammateEnv, TeammateTools,
-=======
-    register as register_team_tools, MessageBus, TeamMessage, Teammate, TeammateManager,
-    TeammateState, VALID_MSG_TYPES,
->>>>>>> origin/task/cons-stream-mcp
 };
 pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
 pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
 ///
-<<<<<<< HEAD
 /// Thin wrapper over [`run_task_with_memory`] with a fresh, empty
 /// conversation memory.
-=======
-/// Creates a fresh agent session bound to a new runtime, spawns the
-/// default stdout renderer (which also answers approval prompts via
-/// stdin), registers the session tool set (todo/skill/task/background/
-/// team/worktree), and executes the task turn by turn until completion
-/// or `max_turns` is reached.
-///
-/// `stream` toggles real SSE streaming (G11): the provider's
-/// `chat_stream` publishes token deltas as they arrive instead of one
-/// plain `chat` response per turn. NOTE: this mirrors the executor's
-/// `run(.., stream)` flag; the executor refactor (batch 1) keeps both
-/// signatures in sync.
->>>>>>> origin/task/cons-stream-mcp
 pub async fn run_task(
     task: &str,
     max_turns: u32,
@@ -133,7 +114,73 @@ pub async fn run_task(
     stream: bool,
     config: &Config,
 ) -> anyhow::Result<()> {
-    run_task_with_memory(task, max_turns, auto_approve, config, None).await
+    run_task_with_memory(task, max_turns, auto_approve, stream, config, None).await
+}
+
+/// Build a full agent session: provider, registry with all session
+/// tools, hooks, runtime, and the shared session-scoped state.
+#[allow(clippy::type_complexity)]
+fn build_session(
+    config: &Config,
+    provider: Arc<dyn LlmProvider>,
+) -> anyhow::Result<(
+    ToolRegistry,
+    Arc<HookRegistry>,
+    AgentRuntime,
+    tokio::sync::broadcast::Receiver<AgentEvent>,
+    tokio::sync::mpsc::Sender<AgentCommand>,
+    std::path::PathBuf,
+    Arc<Mutex<Option<String>>>,
+    Arc<Mutex<CronScheduler>>,
+    Arc<Mutex<McpRegistry>>,
+    Arc<BackgroundManager>,
+)> {
+    let mut registry = ToolRegistry::new(config)?;
+
+    let mut hooks_registry = HookRegistry::default();
+    register_default_hooks(&mut hooks_registry);
+    let hooks = Arc::new(hooks_registry);
+
+    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+
+    let workspace = std::env::current_dir()?;
+    let todo = Arc::new(Mutex::new(TodoManager::default()));
+    todo::register(&mut registry, todo.clone());
+
+    let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
+    skill::register(&mut registry, skills_dir.clone());
+
+    let compact_request = Arc::new(Mutex::new(None));
+    compaction::register(&mut registry, compact_request.clone());
+
+    let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
+    background::register(&mut registry, background.clone());
+    task::register(&mut registry, &workspace);
+
+    // INTEGRATION POINT: teammate replies land in
+    // `{workspace}/.team/inbox/lead.jsonl`; the executor's turn-start
+    // should drain it via `MessageBus::drain_lead_inbox`.
+    team::register(&mut registry, &workspace, provider.clone(), Some(runtime.events_sender()));
+    worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
+
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
+    cron::register(&mut registry, cron.clone());
+    let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
+    mcp::register(&mut registry, mcp_registry.clone());
+    let _ = memory_store::register(&mut registry, &workspace, provider.clone());
+
+    Ok((
+        registry,
+        hooks,
+        runtime,
+        events_rx,
+        commands_tx,
+        workspace,
+        compact_request,
+        cron,
+        mcp_registry,
+        background,
+    ))
 }
 
 /// Run an agent task, optionally seeded with a restored conversation
@@ -150,70 +197,27 @@ pub async fn run_task_with_memory(
     task: &str,
     max_turns: u32,
     auto_approve: bool,
+    stream: bool,
     config: &Config,
     initial_memory: Option<ConversationMemory>,
 ) -> anyhow::Result<()> {
-    // Build the LLM provider
-    let provider = build_provider(config)?;
-
-    // Build the tool registry with built-in tools
-    let mut registry = ToolRegistry::new(config)?;
-
-    // Session hooks (s20): permission policies run as PreToolUse hooks
-    let mut hooks_registry = HookRegistry::default();
-    register_default_hooks(&mut hooks_registry);
-    let hooks = Arc::new(hooks_registry);
-
-    // Create the runtime with event bus + command channel
-    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
-
-    // Create session-scoped state and register session tools
-    let workspace = std::env::current_dir()?;
-    let todo = Arc::new(Mutex::new(TodoManager::default()));
-    todo::register(&mut registry, todo.clone());
-    // G9 (s07): the skills directory is configurable, defaulting to
-    // `<workspace>/skills`.
-    let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
-    skill::register(&mut registry, skills_dir.clone());
-    // The `compact` tool requests compaction through a channel; the
-    // executor performs it on the live conversation at the next turn.
-    let compact_request = Arc::new(Mutex::new(None));
-    compaction::register(&mut registry, compact_request.clone());
-    let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
-    background::register(&mut registry, background.clone());
-    task::register(&mut registry, &workspace);
-<<<<<<< HEAD
-    // Team (s09-s17): teammates run real LLM loops (s15) with team
-    // protocols (s16) and autonomous task claiming (s17). The provider is
-    // built from the same config so teammates share the retry/backoff
-    // semantics of the main loop; the event bus keeps teammates observable.
-    //
-    // INTEGRATION POINT for the main agent / executor: teammate replies and
-    // protocol responses land in `{workspace}/.team/inbox/lead.jsonl`. At
-    // turn-start the executor should drain the lead's inbox and inject the
-    // text into the conversation (`MessageBus::read_inbox("lead")` or the
-    // ready-to-inject `MessageBus::drain_lead_inbox`). Executor wiring is
-    // owned by the executor batch; the read + format side lives in team.rs.
-    team::register(
-        &mut registry,
-        &workspace,
-        Arc::from(build_provider(config)?),
-        Some(runtime.events_sender()),
-    );
-    worktree::register(&mut registry, &workspace);
-=======
-    // Team / worktree tools attach the runtime event bus (G14) so
-    // message sends, teammate state changes and worktree lifecycle
-    // events are published to observers alongside the loop events.
-    team::register(&mut registry, &workspace, Some(runtime.events_sender()));
-    worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
->>>>>>> origin/task/cons-stream-mcp
-    // Cron (s14): one scheduler shared by the three cron tools and the
-    // executor, so tools manage jobs while the loop fires due ones.
-    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
-    cron::register(&mut registry, cron.clone());
-    let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
-    mcp::register(&mut registry, mcp_registry.clone());
+    // Build the provider, tool registry, hooks, runtime and all session
+    // tools. The provider powers the main loop, the compaction tool and
+    // the teammate loops; the event bus keeps every session component
+    // observable.
+    let provider: Arc<dyn LlmProvider> = Arc::from(build_provider(config)?);
+    let (
+        mut registry,
+        hooks,
+        runtime,
+        events_rx,
+        commands_tx,
+        workspace,
+        compact_request,
+        cron,
+        mcp_registry,
+        background,
+    ) = build_session(config, provider.clone())?;
 
     // G3 (s09): cross-session memory. The store registers four tools;
     // executor injection (stop extraction + per-turn index injection) is
@@ -241,7 +245,9 @@ pub async fn run_task_with_memory(
     // (the executor's prompt assembly carries them from turn one);
     // `resume` restores an existing conversation instead.
     let mut skill_registry = SkillRegistry::default();
-    let _ = skill_registry.load_from(&skills_dir);
+    if let Err(e) = skill_registry.load_from(&workspace.join("skills")) {
+        tracing::debug!(error = %e, "skills directory unavailable");
+    }
     let system_prompt = with_layer1(&config.agent.system_prompt, &skill_registry);
     let memory = match initial_memory {
         Some(memory) => memory,
@@ -249,14 +255,15 @@ pub async fn run_task_with_memory(
     };
     let planner = Planner::new(config.agent.max_turns);
     let session = crate::agent::executor::SessionState {
-        todo,
+        todo: Arc::new(Mutex::new(TodoManager::default())),
         background,
         hooks,
         cron,
         mcp: mcp_registry,
         compact_request,
     };
-    let mut executor = Executor::new(provider, registry, auto_approve, runtime, session);
+    let mut executor =
+        Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
 
     // Start the task
     tracing::info!("Starting task: {}", task);

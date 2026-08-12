@@ -7,13 +7,10 @@ use crate::llm::{
     ToolCallRequest, ToolDefinition, Usage,
 };
 use async_trait::async_trait;
-<<<<<<< HEAD
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
-=======
 use futures::stream::BoxStream;
 use futures::StreamExt;
->>>>>>> origin/task/cons-stream-mcp
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// Anthropic Claude provider.
 ///
@@ -82,7 +79,6 @@ impl LlmProvider for AnthropicProvider {
         // (e.g. `https://api.deepseek.com/anthropic`); the messages route
         // is appended the same way for all of them.
         let url = format!("{}/messages", self.api_base.trim_end_matches('/'));
-<<<<<<< HEAD
 
         // Build system prompt from messages
         let (system_prompt, chat_messages) = split_system_messages(messages);
@@ -114,9 +110,6 @@ impl LlmProvider for AnthropicProvider {
             body["tools"] = serde_json::to_value(&tool_defs)?;
         }
 
-=======
-        let body = stream_body(self, messages, tools, false);
->>>>>>> origin/task/cons-stream-mcp
         let response = self
             .client
             .post(url)
