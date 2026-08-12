@@ -12,8 +12,7 @@ use crate::llm::{ChatMessage, LlmProvider, Role};
 use crate::tools::{Tool, ToolResult};
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 /// Token threshold that triggers automatic compaction.
 pub const AUTO_COMPACT_THRESHOLD: usize = 50_000;
@@ -144,8 +143,9 @@ pub async fn auto_compact(
 /// `auto_compact` runs on a fresh history; the summary mechanics
 /// (transcript, LLM summary, marker message) are exercised end to end.
 pub struct CompactTool {
-    pub provider: Arc<dyn LlmProvider>,
-    pub workspace: PathBuf,
+    /// Compact-request channel: the tool writes a focus hint, the
+    /// executor performs the compaction on the live conversation.
+    pub request: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Tool for CompactTool {
@@ -170,32 +170,17 @@ impl Tool for CompactTool {
 
     fn execute(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
         let focus = args.get("focus").and_then(|v| v.as_str()).map(str::to_string);
-        let provider = Arc::clone(&self.provider);
-        let workspace = self.workspace.clone();
-        let mut messages: Vec<ChatMessage> = Vec::new();
-        let joined = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build compaction runtime");
-            runtime.block_on(async move {
-                auto_compact(&mut messages, provider.as_ref(), focus.as_deref(), &workspace).await
-            })
-        })
-        .join();
-        match joined {
-            Ok(Ok(summary)) => Ok(ToolResult::ok(summary)),
-            Ok(Err(e)) => Ok(ToolResult::err(format!("compaction failed: {}", e))),
-            Err(_) => Ok(ToolResult::err("compaction thread panicked")),
-        }
+        *self.request.lock().unwrap() = focus;
+        Ok(ToolResult::ok(
+            "Compaction requested — the conversation will be compressed after this turn.",
+        ))
     }
 }
 
 /// Register this module's tools with the registry.
 pub fn register(
     registry: &mut crate::tools::ToolRegistry,
-    provider: Arc<dyn LlmProvider>,
-    workspace: PathBuf,
+    request: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) {
-    registry.register(Box::new(CompactTool { provider, workspace }));
+    registry.register(Box::new(CompactTool { request }));
 }

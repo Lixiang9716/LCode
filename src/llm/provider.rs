@@ -51,4 +51,15 @@ pub trait LlmProvider: Send + Sync {
 
     /// Validate that the provider is properly configured.
     fn validate(&self) -> anyhow::Result<()>;
+
+    /// Change the `max_tokens` budget used by subsequent [`Self::chat`]
+    /// calls. Decorators (e.g. [`crate::agent::RetryProvider`]) forward
+    /// this to their inner provider so truncation upgrades actually reach
+    /// the request body; providers without a tunable budget may no-op.
+    fn set_max_tokens(&self, _n: u32) {}
+
+    /// Switch the model used by subsequent [`Self::chat`] calls (e.g.
+    /// failover to a fallback model). Providers without a switchable
+    /// model may no-op.
+    fn set_model(&self, _model: String) {}
 }

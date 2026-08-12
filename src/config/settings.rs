@@ -44,6 +44,11 @@ pub struct LlmConfig {
     /// Temperature for generation
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+
+    /// Model to fail over to when the primary model keeps failing (used
+    /// by the retry layer after `max_attempts` consecutive failures)
+    #[serde(default)]
+    pub fallback_model: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -55,6 +60,7 @@ impl Default for LlmConfig {
             api_base: None,
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
+            fallback_model: None,
         }
     }
 }
@@ -77,6 +83,11 @@ pub struct AgentConfig {
     /// Maximum context window size (in tokens)
     #[serde(default = "default_context_size")]
     pub context_size: usize,
+
+    /// Directory containing skills (`SKILL.md` files). Defaults to
+    /// `<workspace>/skills` when unset (G9 / s07).
+    #[serde(default)]
+    pub skills_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -86,6 +97,7 @@ impl Default for AgentConfig {
             max_turns: default_max_turns(),
             require_approval: default_require_approval(),
             context_size: default_context_size(),
+            skills_dir: None,
         }
     }
 }

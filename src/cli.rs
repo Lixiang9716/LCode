@@ -49,12 +49,22 @@ pub enum Command {
         /// Auto-approve all tool calls (use with caution!)
         #[arg(short = 'y', long)]
         auto_approve: bool,
+
+        /// Stream token deltas as they are generated (typewriter effect)
+        #[arg(long)]
+        stream: bool,
     },
 
     /// Manage LCode configuration
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+
+    /// Save, list, or resume agent sessions
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
     },
 
     /// Update LCode to the latest release from GitHub
@@ -90,6 +100,29 @@ pub enum ConfigAction {
 
     /// List all available configuration keys
     List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SessionAction {
+    /// Save a task as a new session snapshot (`.sessions/{id}.json`)
+    Save {
+        /// The task description to save
+        task: Vec<String>,
+
+        /// Explicit session id (hex, 1-8 chars); auto-generated when omitted
+        #[arg(long)]
+        id: Option<String>,
+    },
+
+    /// List saved sessions, newest first
+    List,
+
+    /// Resume a saved session, continuing its task with the restored
+    /// conversation history
+    Resume {
+        /// Session id (from `lcode session list`)
+        id: String,
+    },
 }
 
 /// Parse CLI arguments and return the structured result.

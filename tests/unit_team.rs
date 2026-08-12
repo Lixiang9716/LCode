@@ -3,6 +3,7 @@
 //! handshake, and the basic-version teammate loop (tool echo, no LLM).
 
 use lcode::agent::{MessageBus, TeamMessage, TeammateManager, TeammateState, VALID_MSG_TYPES};
+use lcode::llm::provider::MockLlmProvider;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -220,4 +221,69 @@ async fn teammate_loop_echoes_plain_text() {
 
     let reply = wait_for_reply(&bus, std::time::Duration::from_secs(5), "response").await;
     assert_eq!(reply.content, "[alice] what is the weather?");
+}
+
+// ---------------------------------------------------------------------------
+// register: event-bus wiring (G14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_wires_events_to_send_and_spawn() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
+    lcode::agent::register_team_tools(
+        &mut registry,
+        &ws,
+        std::sync::Arc::new(MockLlmProvider::new()),
+        Some(tx),
+    );
+
+    // send_message publishes TeamMessageSent.
+    let result = registry
+        .execute(
+            "send_message",
+            &serde_json::json!({ "from": "lead", "to": "alice", "content": "hi" }),
+        )
+        .unwrap();
+    assert!(result.success, "output: {}", result.output);
+    match rx.try_recv().unwrap() {
+        lcode::agent::AgentEvent::TeamMessageSent { from, to, msg_type } => {
+            assert_eq!(from, "lead");
+            assert_eq!(to, "alice");
+            assert_eq!(msg_type, "text");
+        }
+        other => panic!("expected TeamMessageSent, got {:?}", other),
+    }
+
+    // spawn_teammate publishes TeammateStateChanged (working).
+    let result = registry
+        .execute("spawn_teammate", &serde_json::json!({ "name": "bob", "role": "coder" }))
+        .unwrap();
+    assert!(result.success, "output: {}", result.output);
+    match rx.try_recv().unwrap() {
+        lcode::agent::AgentEvent::TeammateStateChanged { name, state } => {
+            assert_eq!(name, "bob");
+            assert_eq!(state, "working");
+        }
+        other => panic!("expected TeammateStateChanged, got {:?}", other),
+    }
+}
+
+#[test]
+fn register_without_events_still_registers_tools() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
+    lcode::agent::register_team_tools(
+        &mut registry,
+        &ws,
+        std::sync::Arc::new(MockLlmProvider::new()),
+        None,
+    );
+    for tool in ["spawn_teammate", "send_message", "read_inbox", "list_teammates"] {
+        assert!(registry.list_tools().contains(&tool), "{tool} must be registered");
+    }
 }

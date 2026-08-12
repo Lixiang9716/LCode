@@ -107,6 +107,7 @@ async fn retries_truncated_response_with_upgraded_budget() {
             Ok(response("full output"))
         }
     });
+    mock.expect_set_max_tokens().with(mockall::predicate::eq(16_384u32)).times(1).return_const(());
 
     let provider = RetryProvider::new(Box::new(mock), fast_policy(3));
 

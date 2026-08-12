@@ -21,6 +21,24 @@ pub struct SessionSnapshot {
     pub todos: Vec<crate::agent::TodoItem>,
 }
 
+impl SessionSnapshot {
+    /// A fresh snapshot with no conversation yet — the CLI/REPL
+    /// `session save` path. Ids are assigned at save time when `id` is
+    /// `None` (see [`SessionStore::save`]).
+    pub fn empty(task: impl Into<String>, id: Option<String>) -> Self {
+        Self {
+            id: id.unwrap_or_default(),
+            task: task.into(),
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            messages: Vec::new(),
+            todos: Vec::new(),
+        }
+    }
+}
+
 /// Stores session snapshots as JSON files under `.sessions/`.
 #[derive(Debug)]
 pub struct SessionStore {
@@ -36,10 +54,17 @@ impl SessionStore {
     ///
     /// A fresh 8-hex-char id (v4 UUID fragment) is generated when the
     /// snapshot carries none; id collisions with an existing file are
-    /// retried so concurrent saves never clobber each other.
+    /// retried so concurrent saves never clobber each other. Explicit ids
+    /// must be valid session ids (hex, no path separators) — otherwise the
+    /// snapshot could be written outside the `.sessions` directory.
     pub fn save(&self, snapshot: &SessionSnapshot) -> anyhow::Result<String> {
         std::fs::create_dir_all(&self.sessions_dir)?;
-        let id = if snapshot.id.is_empty() { self.new_id()? } else { snapshot.id.clone() };
+        let id = if snapshot.id.is_empty() {
+            self.new_id()?
+        } else {
+            validate_id(&snapshot.id)?;
+            snapshot.id.clone()
+        };
         let mut on_disk = snapshot.clone();
         on_disk.id = id.clone();
         let path = self.sessions_dir.join(format!("{id}.json"));

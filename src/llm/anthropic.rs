@@ -1,11 +1,16 @@
 //! Anthropic (Claude) LLM provider implementation.
 
 use crate::config::LlmConfig;
+use crate::llm::sse::{sse_stream, SseData};
 use crate::llm::{
-    ChatMessage, FinishReason, FunctionCall, LlmProvider, LlmResponse, ToolCallRequest,
-    ToolDefinition, Usage,
+    ChatMessage, FinishReason, FunctionCall, LlmProvider, LlmResponse, StreamEvent,
+    ToolCallRequest, ToolDefinition, Usage,
 };
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use futures::StreamExt;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// Anthropic Claude provider.
 ///
@@ -14,9 +19,13 @@ use async_trait::async_trait;
 /// `https://api.anthropic.com/v1` endpoint is used.
 pub struct AnthropicProvider {
     api_key: String,
-    model: String,
+    /// Switched at runtime via [`LlmProvider::set_model`] (fallback
+    /// failover); interior mutability because `chat` takes `&self`.
+    model: Mutex<String>,
     api_base: String,
-    max_tokens: u32,
+    /// Current max_tokens budget; raised at runtime via
+    /// [`LlmProvider::set_max_tokens`] when a response is truncated.
+    max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
 }
@@ -44,9 +53,9 @@ impl AnthropicProvider {
         let api_base = config.api_base.clone().unwrap_or_else(|| DEFAULT_API_BASE.to_string());
         Ok(Self {
             api_key,
-            model: config.model.clone(),
+            model: Mutex::new(config.model.clone()),
             api_base,
-            max_tokens: config.max_tokens,
+            max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
             client: reqwest::Client::new(),
         })
@@ -87,8 +96,8 @@ impl LlmProvider for AnthropicProvider {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": self.max_tokens,
+            "model": self.model.lock().unwrap().clone(),
+            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
             "temperature": self.temperature,
             "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
         });
@@ -121,6 +130,45 @@ impl LlmProvider for AnthropicProvider {
         parse_anthropic_response(&data)
     }
 
+    /// Real streaming (G11): the same messages body with `stream: true`;
+    /// the SSE response maps `content_block_delta` (text_delta) events to
+    /// [`StreamEvent::TextDelta`] and the final `message_delta`'s
+    /// `stop_reason` to [`StreamEvent::Done`]. `[DONE]` and `message_stop`
+    /// are safe fallbacks that end the stream with `Done(Stop)`.
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        let url = format!("{}/messages", self.api_base.trim_end_matches('/'));
+        let body = stream_body(self, messages, tools, true);
+        let response = self
+            .client
+            .post(url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await?;
+            anyhow::bail!("Anthropic API error ({}): {}", status, text);
+        }
+
+        let stream = sse_stream(response).filter_map(|item| async move {
+            match item {
+                Ok(SseData::Json(data)) => anthropic_stream_event(&data).map(Ok),
+                Ok(SseData::Done) => Some(Ok(StreamEvent::Done(FinishReason::Stop))),
+                Ok(SseData::Other(_)) => None,
+                Err(e) => Some(Err(e)),
+            }
+        });
+        Ok(Box::pin(stream))
+    }
+
     fn name(&self) -> &str {
         "anthropic"
     }
@@ -129,10 +177,95 @@ impl LlmProvider for AnthropicProvider {
         if self.api_key.is_empty() {
             anyhow::bail!("Anthropic API key is not set");
         }
-        if self.model.is_empty() {
+        if self.model.lock().unwrap().is_empty() {
             anyhow::bail!("Anthropic model is not set");
         }
         Ok(())
+    }
+
+    fn set_max_tokens(&self, n: u32) {
+        self.max_tokens.store(n, Ordering::Relaxed);
+    }
+
+    fn set_model(&self, model: String) {
+        *self.model.lock().unwrap() = model;
+    }
+}
+
+/// Build the messages request body; `stream` adds `"stream": true` so the
+/// API answers with SSE events instead of a single response.
+fn stream_body(
+    provider: &AnthropicProvider,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    stream: bool,
+) -> serde_json::Value {
+    let (system_prompt, chat_messages) = split_system_messages(messages);
+
+    // Convert tools to Anthropic format
+    let tool_defs: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.function.name,
+                "description": t.function.description,
+                "input_schema": t.function.parameters,
+            })
+        })
+        .collect();
+
+    let mut body = serde_json::json!({
+        "model": provider.model,
+        "max_tokens": provider.max_tokens,
+        "temperature": provider.temperature,
+        "stream": stream,
+        "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
+    });
+
+    if !system_prompt.is_empty() {
+        body["system"] = serde_json::Value::String(system_prompt);
+    }
+
+    if !tool_defs.is_empty() {
+        body["tools"] = serde_json::to_value(&tool_defs).unwrap();
+    }
+
+    body
+}
+
+/// Map one SSE event of an Anthropic streaming response to a
+/// [`StreamEvent`]: `content_block_delta` (text_delta) → `TextDelta`,
+/// `message_delta` → `Done` with the mapped stop reason. Other event
+/// types (`message_start`, `content_block_start`, `ping`, ...) map to
+/// `None` and are skipped by the stream consumer.
+#[doc(hidden)]
+pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
+    match data["type"].as_str() {
+        Some("content_block_delta") => {
+            let delta = &data["delta"];
+            if delta["type"].as_str() == Some("text_delta") {
+                let text = delta["text"].as_str().unwrap_or_default();
+                if !text.is_empty() {
+                    return Some(StreamEvent::TextDelta(text.to_string()));
+                }
+            }
+            // input_json_delta (tool-use arguments) and other delta types
+            // carry no user-visible text.
+            None
+        }
+        Some("message_delta") => {
+            let stop_reason = data["delta"]["stop_reason"].as_str();
+            Some(StreamEvent::Done(match stop_reason {
+                Some("end_turn") => FinishReason::Stop,
+                Some("max_tokens") => FinishReason::Length,
+                Some("tool_use") => FinishReason::ToolCalls,
+                _ => FinishReason::Unknown,
+            }))
+        }
+        // Final event of a message; a fallback in case `message_delta`
+        // was missing (some compatible endpoints omit it).
+        Some("message_stop") => Some(StreamEvent::Done(FinishReason::Stop)),
+        _ => None,
     }
 }
 

@@ -130,6 +130,21 @@ impl SkillRegistry {
     }
 }
 
+/// Layer-1 injection (s07 / G9): append the registry's one-line
+/// descriptions to a base system prompt as a `## Skills` section.
+///
+/// The combined prompt is what the session hands to the executor, so the
+/// skill catalog is visible to the model from the first turn (cheap);
+/// `load_skill` still pulls full SKILL.md bodies on demand (expensive).
+/// Returns the base unchanged when no skills are available.
+pub fn with_layer1(base: &str, registry: &SkillRegistry) -> String {
+    let descriptions = registry.descriptions();
+    if descriptions == "(no skills available)" {
+        return base.to_string();
+    }
+    format!("{base}\n\n## Skills\n{descriptions}")
+}
+
 /// Tool: `load_skill` — pulls the full skill body into the context.
 pub struct LoadSkillTool {
     pub registry: Arc<Mutex<SkillRegistry>>,

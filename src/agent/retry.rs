@@ -4,9 +4,12 @@
 //! server errors) with exponential backoff + jitter, upgrades max_tokens
 //! on truncation, and triggers reactive compaction on prompt-too-long.
 
-use crate::llm::{ChatMessage, FinishReason, LlmProvider, LlmResponse, ToolDefinition};
+use crate::llm::{
+    ChatMessage, FinishReason, LlmProvider, LlmResponse, StreamEvent, ToolDefinition,
+};
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicU32, Ordering};
+use futures::stream::BoxStream;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 /// Initial max_tokens budget before any truncation upgrade (matches the
@@ -14,6 +17,16 @@ use std::time::Duration;
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 /// Hard cap for the upgraded budget, so a doubling chain cannot blow up.
 const MAX_TOKENS_CAP: u32 = 65_536;
+
+/// Marker prefix attached to prompt-too-long errors so callers can
+/// distinguish them from other API failures.
+///
+/// Integration point: the executor's compaction channel (`maybe_compact`,
+/// batch 1) can detect this prefix on a failed LLM call and trigger a
+/// reactive compact + retry (s11 error-recovery path 2). The marker is a
+/// string prefix (not a dedicated error type) so it survives any error
+/// conversion/formatting in between.
+pub const PROMPT_TOO_LONG_MARKER: &str = "[PROMPT_TOO_LONG]";
 
 /// Retry policy.
 #[derive(Debug, Clone)]
@@ -36,26 +49,39 @@ impl Default for RetryPolicy {
 pub struct RetryProvider {
     inner: Box<dyn LlmProvider>,
     policy: RetryPolicy,
-    /// Current max_tokens budget, doubled on truncation (`Length`).
-    ///
-    /// NOTE: `LlmProvider::chat` does not accept a `max_tokens` argument
-    /// today, so this budget is bookkeeping reserved for a future
-    /// parameterized chat. The Length retry itself is still useful
-    /// because truncation is sometimes non-deterministic, and the budget
-    /// (plus `upgrade_count`) gives observability into how often the
-    /// default budget would have been exceeded.
+    /// Current max_tokens budget, doubled on truncation (`Length`) and
+    /// pushed into the inner provider via [`LlmProvider::set_max_tokens`]
+    /// so the upgrade reaches the actual request body.
     max_tokens: AtomicU32,
     /// Number of max_tokens upgrades performed so far.
     upgrade_count: AtomicU32,
+    /// Model to fail over to when all `max_attempts` of a call fail
+    /// (configured via `llm.fallback_model`).
+    fallback_model: Option<String>,
+    /// Whether the fallback model has been activated (one switch per
+    /// provider lifetime, mirroring s11's 529-failover).
+    fallback_used: AtomicBool,
 }
 
 impl RetryProvider {
     pub fn new(inner: Box<dyn LlmProvider>, policy: RetryPolicy) -> Self {
+        Self::with_fallback(inner, policy, None)
+    }
+
+    /// Create a provider with an optional fallback model that is switched
+    /// in (once) when a call exhausts its `max_attempts`.
+    pub fn with_fallback(
+        inner: Box<dyn LlmProvider>,
+        policy: RetryPolicy,
+        fallback_model: Option<String>,
+    ) -> Self {
         Self {
             inner,
             policy,
             max_tokens: AtomicU32::new(DEFAULT_MAX_TOKENS),
             upgrade_count: AtomicU32::new(0),
+            fallback_model,
+            fallback_used: AtomicBool::new(false),
         }
     }
 
@@ -72,6 +98,30 @@ impl RetryProvider {
             || msg.contains("500")
             || msg.contains("502")
             || msg.contains("503")
+    }
+
+    /// Does this error indicate the prompt/context is too long for the
+    /// model's window (s11 error-recovery path 2)?
+    fn is_prompt_too_long(err: &anyhow::Error) -> bool {
+        let msg = err.to_string().to_lowercase();
+        msg.contains("prompt_too_long")
+            || msg.contains("prompt is too long")
+            || msg.contains("maximum context length")
+            || msg.contains("context_length_exceeded")
+            || msg.contains("context window")
+            || msg.contains("413")
+    }
+
+    /// Attach the [`PROMPT_TOO_LONG_MARKER`] prefix to a prompt-too-long
+    /// error (idempotent) so the executor's compaction channel can
+    /// recognise it after any error formatting/translation.
+    fn flag_prompt_too_long(err: anyhow::Error) -> anyhow::Error {
+        let msg = err.to_string();
+        if msg.starts_with(PROMPT_TOO_LONG_MARKER) {
+            err
+        } else {
+            anyhow::anyhow!("{PROMPT_TOO_LONG_MARKER} {msg}")
+        }
     }
 
     /// Exponential backoff: `base_delay_ms * 2^(attempt-1) + jitter`,
@@ -120,6 +170,31 @@ impl RetryProvider {
         self.max_tokens.load(Ordering::Relaxed)
     }
 
+    /// Decide whether to retry a transient failure. Within
+    /// `max_attempts` this is always true; afterwards the fallback model
+    /// is switched in once (returning true) so the call gets exactly one
+    /// more attempt on the fallback model.
+    fn should_retry(&self, attempt: u32) -> bool {
+        attempt < self.policy.max_attempts || self.try_fallback_model()
+    }
+
+    /// Switch to the fallback model once, if one is configured. Returns
+    /// whether the switch happened (i.e. the call should be retried).
+    fn try_fallback_model(&self) -> bool {
+        if self.fallback_used.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some(model) = self.fallback_model.as_deref() else {
+            return false;
+        };
+        if self.fallback_used.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        tracing::warn!(model, "retries exhausted; switching to fallback model");
+        self.inner.set_model(model.to_string());
+        true
+    }
+
     /// Current max_tokens budget (after any truncation upgrades).
     pub fn max_tokens_budget(&self) -> u32 {
         self.max_tokens.load(Ordering::Relaxed)
@@ -128,6 +203,11 @@ impl RetryProvider {
     /// Number of max_tokens upgrades performed so far.
     pub fn upgrade_count(&self) -> u32 {
         self.upgrade_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the fallback model has been activated.
+    pub fn on_fallback_model(&self) -> bool {
+        self.fallback_used.load(Ordering::Relaxed)
     }
 }
 
@@ -144,23 +224,30 @@ impl LlmProvider for RetryProvider {
             let outcome = self.inner.chat(messages, tools).await;
             let response = match outcome {
                 Ok(resp) => resp,
-                Err(err) if !Self::is_transient(&err) || attempt >= self.policy.max_attempts => {
-                    // Non-transient error, or attempts exhausted: return
-                    // the last failure as-is.
-                    return Err(err);
+                // Prompt-too-long errors are not transient but need to
+                // be flagged so the executor's compaction channel can
+                // trigger a reactive compact + retry (s11 path 2).
+                Err(err) if Self::is_prompt_too_long(&err) => {
+                    return Err(Self::flag_prompt_too_long(err));
                 }
-                Err(err) => {
-                    // Transient: exponential backoff + jitter, then retry.
+                Err(err) if !Self::is_transient(&err) => return Err(err),
+                // Transient: retry with exponential backoff + jitter
+                // while attempts remain, or fail over to the fallback
+                // model once (s11 529-failover).
+                Err(err) if self.should_retry(attempt) => {
                     self.backoff_sleep(attempt, &err).await;
                     continue;
                 }
+                Err(err) => return Err(err),
             };
             if response.finish_reason == FinishReason::Length && attempt < self.policy.max_attempts
             {
-                // Truncated: double the max_tokens budget (bookkeeping —
-                // see the field docs) and retry once. Bounded by
-                // `max_attempts` because `attempt` keeps counting.
+                // Truncated: double the max_tokens budget and push it into
+                // the inner provider so the retry actually sends the
+                // upgraded budget. Bounded by `max_attempts` because
+                // `attempt` keeps counting.
                 let budget = self.upgrade_budget();
+                self.inner.set_max_tokens(budget);
                 tracing::warn!(
                     "response truncated on attempt {}/{}; budget upgraded to {}",
                     attempt,
@@ -177,7 +264,33 @@ impl LlmProvider for RetryProvider {
         self.inner.name()
     }
 
+    /// Delegate streaming to the inner provider (G11).
+    ///
+    /// Retry/backoff applies to the plain `chat` path only: a delta
+    /// stream can fail mid-flight and has no single response to retry,
+    /// so real streaming is passed through untouched — the executor's
+    /// streaming path reassembles the deltas itself.
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        self.inner.chat_stream(messages, tools).await
+    }
+
     fn validate(&self) -> anyhow::Result<()> {
         self.inner.validate()
+    }
+
+    fn set_max_tokens(&self, n: u32) {
+        self.max_tokens.store(n, Ordering::Relaxed);
+        self.inner.set_max_tokens(n);
+    }
+
+    fn set_model(&self, model: String) {
+        // An explicit model switch supersedes any future fallback: do not
+        // let the failure path override a caller-chosen model afterwards.
+        self.fallback_used.store(true, Ordering::Relaxed);
+        self.inner.set_model(model);
     }
 }

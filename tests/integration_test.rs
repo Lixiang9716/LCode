@@ -113,6 +113,7 @@ fn provider_for(server: &MockServer) -> OpenAiProvider {
         api_base: Some(format!("{}/v1", server.uri())),
         max_tokens: 256,
         temperature: 0.0,
+        fallback_model: None,
     };
     OpenAiProvider::new(&config).expect("provider should validate with a non-empty api_key")
 }

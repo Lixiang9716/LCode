@@ -6,6 +6,7 @@
 //! - Approve/reject tool calls
 //! - Manage sessions
 
+use crate::agent::{ConversationMemory, SessionSnapshot, SessionStore};
 use crate::config::Config;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -88,7 +89,7 @@ enum ExitStatus {
 async fn handle_command(input: &str, config: &Config) -> anyhow::Result<ExitStatus> {
     let parts: Vec<&str> = input[1..].splitn(2, ' ').collect();
     let cmd = parts[0];
-    let _args = parts.get(1).unwrap_or(&"");
+    let args = parts.get(1).unwrap_or(&"");
 
     match cmd {
         "help" | "h" => {
@@ -104,25 +105,20 @@ async fn handle_command(input: &str, config: &Config) -> anyhow::Result<ExitStat
             Ok(ExitStatus::Continue)
         }
         "config" => {
-            // Show config
-            let cfg = crate::config::load()?;
-            println!("{}", toml::to_string_pretty(&cfg)?);
+            show_config()?;
             Ok(ExitStatus::Continue)
         }
         "tools" => {
-            println!("Available tools:");
-            println!("  read_file   - Read a file's contents");
-            println!("  write_file  - Write content to a file");
-            println!("  edit_file   - Edit a file with find-and-replace");
-            println!("  list_dir    - List directory contents");
-            println!("  grep        - Search file contents");
-            println!("  glob        - Find files by pattern");
-            println!("  shell       - Execute shell commands");
+            print_tools();
             Ok(ExitStatus::Continue)
         }
         "model" => {
             println!("Current model: {}", config.llm.model);
             println!("Provider: {}", config.llm.provider);
+            Ok(ExitStatus::Continue)
+        }
+        "save" | "resume" | "sessions" => {
+            handle_session_command(cmd, args, config).await?;
             Ok(ExitStatus::Continue)
         }
         "" => {
@@ -134,6 +130,112 @@ async fn handle_command(input: &str, config: &Config) -> anyhow::Result<ExitStat
             Ok(ExitStatus::Continue)
         }
     }
+}
+
+/// Show the current configuration as TOML.
+fn show_config() -> anyhow::Result<()> {
+    let cfg = crate::config::load()?;
+    println!("{}", toml::to_string_pretty(&cfg)?);
+    Ok(())
+}
+
+/// Print the list of available tools.
+fn print_tools() {
+    println!("Available tools:");
+    println!("  read_file   - Read a file's contents");
+    println!("  write_file  - Write content to a file");
+    println!("  edit_file   - Edit a file with find-and-replace");
+    println!("  list_dir    - List directory contents");
+    println!("  grep        - Search file contents");
+    println!("  glob        - Find files by pattern");
+    println!("  shell       - Execute shell commands");
+}
+
+/// Handle the session-related slash commands: `/save [--id <id>] <task>`,
+/// `/resume <id>`, and `/sessions`.
+async fn handle_session_command(cmd: &str, args: &str, config: &Config) -> anyhow::Result<()> {
+    match cmd {
+        "save" => save_session(args),
+        "resume" => resume_session(args, config).await,
+        "sessions" => list_sessions(),
+        _ => unreachable!("only save/resume/sessions reach this handler"),
+    }
+}
+
+/// `/save [--id <id>] <task description>` — store a session snapshot.
+/// Errors are printed rather than propagated so the REPL keeps running.
+fn save_session(args: &str) -> anyhow::Result<()> {
+    // Optional `--id <id>` flag, then the task description.
+    let (id, task_desc) = if let Some(rest) = args.strip_prefix("--id ") {
+        match rest.split_once(' ') {
+            Some((id, task)) => (Some(id.to_string()), task.to_string()),
+            None => (Some(rest.to_string()), String::new()),
+        }
+    } else {
+        (None, args.to_string())
+    };
+    if task_desc.trim().is_empty() {
+        println!("Usage: /save [--id <id>] <task description>");
+        return Ok(());
+    }
+    let store = SessionStore::new(&std::env::current_dir()?);
+    match store.save(&SessionSnapshot::empty(task_desc, id)) {
+        Ok(saved_id) => {
+            println!("Session saved: {saved_id}");
+            println!("Resume later with: /resume {saved_id}");
+        }
+        Err(e) => println!("Error: {e}"),
+    }
+    Ok(())
+}
+
+/// `/resume <id>` — load a saved session and continue its task with the
+/// restored conversation history.
+async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
+    let id = args.trim();
+    if id.is_empty() {
+        println!("Usage: /resume <session id> (see /sessions)");
+        return Ok(());
+    }
+    let store = SessionStore::new(&std::env::current_dir()?);
+    match store.load(id) {
+        Ok(snapshot) => {
+            println!("Resuming session {id}: {}", snapshot.task);
+            let memory = ConversationMemory::from_messages(
+                config.agent.system_prompt.clone(),
+                snapshot.messages,
+            );
+            if let Err(e) = crate::agent::run_task_with_memory(
+                &snapshot.task,
+                config.agent.max_turns,
+                config.agent.require_approval,
+                false,
+                config,
+                Some(memory),
+            )
+            .await
+            {
+                eprintln!("Error: {e}");
+            }
+        }
+        Err(e) => println!("Error: {e}"),
+    }
+    Ok(())
+}
+
+/// `/sessions` — list saved sessions, newest first.
+fn list_sessions() -> anyhow::Result<()> {
+    let store = SessionStore::new(&std::env::current_dir()?);
+    let sessions = store.list();
+    if sessions.is_empty() {
+        println!("No saved sessions.");
+        return Ok(());
+    }
+    println!("{:<12} {:<12} TASK", "ID", "CREATED");
+    for session in sessions {
+        println!("{:<12} {:<12} {}", session.id, session.created_at, session.task);
+    }
+    Ok(())
 }
 
 /// Print help information for the REPL.
@@ -153,6 +255,9 @@ fn print_help() {
     println!("  /config         - Show current configuration");
     println!("  /tools          - List available tools");
     println!("  /model          - Show current model/provider");
+    println!("  /save [--id]    - Save a task as a session snapshot");
+    println!("  /resume <id>    - Resume a saved session");
+    println!("  /sessions       - List saved sessions");
     println!();
     println!("Key bindings:");
     println!("  Ctrl+C          - Interrupt current operation");
@@ -163,6 +268,14 @@ fn print_help() {
 
 /// Process a user input as a task.
 async fn process_input(input: &str, config: &Config) -> anyhow::Result<()> {
-    crate::agent::run_task(input, config.agent.max_turns, config.agent.require_approval, config)
-        .await
+    // The REPL stays on the plain (non-streamed) path; `lcode run
+    // --stream` enables the typewriter effect (G11).
+    crate::agent::run_task(
+        input,
+        config.agent.max_turns,
+        config.agent.require_approval,
+        false,
+        config,
+    )
+    .await
 }

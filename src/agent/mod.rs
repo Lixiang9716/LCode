@@ -19,7 +19,8 @@
 //! - [`run_subagent`] — context-isolated subtask delegation (s04)
 //! - [`BackgroundManager`] — non-blocking background commands (s08)
 //! - [`TaskManager`] — persistent disk-backed task board (s07)
-//! - [`TeammateManager`] — multi-agent teams, protocols, autonomy (s09-s11)
+//! - [`TeammateManager`] — multi-agent teams with real LLM loops, team
+//!   protocols, and autonomy (s09-s17)
 //! - [`WorktreeManager`] — git worktree task isolation (s12)
 
 use crate::config::Config;
@@ -33,10 +34,15 @@ mod compaction;
 mod cron;
 mod event;
 mod executor;
+mod executor_hooks;
 mod hooks;
 mod mcp;
+mod mcp_stdio;
 mod memory;
+mod memory_store;
 mod planner;
+mod prompt;
+mod protocol;
 mod render;
 mod retry;
 mod runtime;
@@ -46,6 +52,7 @@ mod stream;
 mod subagent;
 mod task;
 mod team;
+mod teammate;
 mod todo;
 mod worktree;
 
@@ -63,90 +70,208 @@ pub use hooks::{
     deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
 };
 pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
+// MCP stdio helpers (G13), exported for integration tests.
+pub use mcp_stdio::{parse_frame, split_command};
 pub use memory::{exact_tokens, ConversationMemory};
+pub use memory_store::{
+    ExtractMemoriesTool, ListMemoriesTool, MemoryFile, MemoryStore, ReadMemoryTool,
+    WriteMemoryTool, CONSOLIDATE_THRESHOLD,
+};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
+pub use prompt::PromptSection;
+pub use protocol::{
+    dispatch_message, parse_plan_verdict, plan_verdict_content, DispatchAction, ProtocolManager,
+    ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
+    ReviewPlanTool, SubmitPlanTool,
+};
 pub use render::render_event;
-pub use retry::{RetryPolicy, RetryProvider};
+pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
-pub use skill::{LoadSkillTool, Skill, SkillRegistry};
+pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
-pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
+pub use task::{
+    Task, TaskClaimTool, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool,
+};
 pub use team::{
-    MessageBus, TeamMessage, Teammate, TeammateManager, TeammateState, VALID_MSG_TYPES,
+    register as register_team_tools, MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate,
+    TeammateManager, TeammateState, VALID_MSG_TYPES,
+};
+pub use teammate::{
+    handle_teammate_message, reinject_identity, run_teammate_loop, TeammateEnv, TeammateTools,
 };
 pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
-pub use worktree::{EventLog, WorktreeManager};
+pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
+///
+/// Thin wrapper over [`run_task_with_memory`] with a fresh, empty
+/// conversation memory.
+pub async fn run_task(
+    task: &str,
+    max_turns: u32,
+    auto_approve: bool,
+    stream: bool,
+    config: &Config,
+) -> anyhow::Result<()> {
+    run_task_with_memory(task, max_turns, auto_approve, stream, config, None).await
+}
+
+/// Build a full agent session: provider, registry with all session
+/// tools, hooks, runtime, and the shared session-scoped state.
+#[allow(clippy::type_complexity)]
+fn build_session(
+    config: &Config,
+    provider: Arc<dyn LlmProvider>,
+) -> anyhow::Result<(
+    ToolRegistry,
+    Arc<HookRegistry>,
+    AgentRuntime,
+    tokio::sync::broadcast::Receiver<AgentEvent>,
+    tokio::sync::mpsc::Sender<AgentCommand>,
+    std::path::PathBuf,
+    Arc<Mutex<Option<String>>>,
+    Arc<Mutex<CronScheduler>>,
+    Arc<Mutex<McpRegistry>>,
+    Arc<BackgroundManager>,
+)> {
+    let mut registry = ToolRegistry::new(config)?;
+
+    let mut hooks_registry = HookRegistry::default();
+    register_default_hooks(&mut hooks_registry);
+    let hooks = Arc::new(hooks_registry);
+
+    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+
+    let workspace = std::env::current_dir()?;
+    let todo = Arc::new(Mutex::new(TodoManager::default()));
+    todo::register(&mut registry, todo.clone());
+
+    let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
+    skill::register(&mut registry, skills_dir.clone());
+
+    let compact_request = Arc::new(Mutex::new(None));
+    compaction::register(&mut registry, compact_request.clone());
+
+    let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
+    background::register(&mut registry, background.clone());
+    task::register(&mut registry, &workspace);
+
+    // INTEGRATION POINT: teammate replies land in
+    // `{workspace}/.team/inbox/lead.jsonl`; the executor's turn-start
+    // should drain it via `MessageBus::drain_lead_inbox`.
+    team::register(&mut registry, &workspace, provider.clone(), Some(runtime.events_sender()));
+    worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
+
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
+    cron::register(&mut registry, cron.clone());
+    let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
+    mcp::register(&mut registry, mcp_registry.clone());
+    let _ = memory_store::register(&mut registry, &workspace, provider.clone());
+
+    Ok((
+        registry,
+        hooks,
+        runtime,
+        events_rx,
+        commands_tx,
+        workspace,
+        compact_request,
+        cron,
+        mcp_registry,
+        background,
+    ))
+}
+
+/// Run an agent task, optionally seeded with a restored conversation
+/// memory (session resume).
 ///
 /// Creates a fresh agent session bound to a new runtime, spawns the
 /// default stdout renderer (which also answers approval prompts via
 /// stdin), registers the session tool set (todo/skill/task/background/
 /// team/worktree), and executes the task turn by turn until completion
-/// or `max_turns` is reached.
-pub async fn run_task(
+/// or `max_turns` is reached. `initial_memory` (e.g. loaded from a
+/// session snapshot) is used as-is; the executor injects the task
+/// description into the conversation like any other run.
+pub async fn run_task_with_memory(
     task: &str,
     max_turns: u32,
     auto_approve: bool,
+    stream: bool,
     config: &Config,
+    initial_memory: Option<ConversationMemory>,
 ) -> anyhow::Result<()> {
-    // Build the LLM provider
-    let provider = build_provider(config)?;
+    // Build the provider, tool registry, hooks, runtime and all session
+    // tools. The provider powers the main loop, the compaction tool and
+    // the teammate loops; the event bus keeps every session component
+    // observable.
+    let provider: Arc<dyn LlmProvider> = Arc::from(build_provider(config)?);
+    let (
+        mut registry,
+        hooks,
+        runtime,
+        events_rx,
+        commands_tx,
+        workspace,
+        compact_request,
+        cron,
+        mcp_registry,
+        background,
+    ) = build_session(config, provider.clone())?;
 
-    // Build the tool registry with built-in tools
-    let mut registry = ToolRegistry::new(config)?;
-
-    // Session hooks (s20): permission policies run as PreToolUse hooks
-    let mut hooks_registry = HookRegistry::default();
-    register_default_hooks(&mut hooks_registry);
-    let hooks = Arc::new(hooks_registry);
-
-    // Create the runtime with event bus + command channel
-    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
-
-    // Create session-scoped state and register session tools
-    let workspace = std::env::current_dir()?;
-    let todo = Arc::new(Mutex::new(TodoManager::default()));
-    todo::register(&mut registry, todo.clone());
-    skill::register(&mut registry, workspace.join("skills"));
-    // The synchronous `compact` tool gets its own provider instance (as
-    // Arc) built from the same config; the executor owns the other one.
-    compaction::register(&mut registry, Arc::from(build_provider(config)?), workspace.clone());
-    let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
-    background::register(&mut registry, background.clone());
-    task::register(&mut registry, &workspace);
-    team::register(&mut registry, &workspace);
-    worktree::register(&mut registry, &workspace);
-    // Cron (s14): one scheduler shared by the three cron tools and the
-    // executor, so tools manage jobs while the loop fires due ones.
-    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
-    cron::register(&mut registry, cron.clone());
-    let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
-    mcp::register(&mut registry, mcp_registry.clone());
+    // G3 (s09): cross-session memory. The store registers four tools;
+    // executor injection (stop extraction + per-turn index injection) is
+    // wired by the coordinator after the executor refactor lands (see
+    // `memory_store` module docs for the two integration points).
+    memory_store::register(&mut registry, &workspace, Arc::from(build_provider(config)?))?;
 
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
-    // state) and their own provider instance.
+    // state) and their own provider instance. The session hook registry
+    // is shared so PreToolUse policies (s20/G12) also gate subagent tools.
     let subagent_registry = Arc::new(ToolRegistry::new(config)?);
-    subagent::register(&mut registry, Arc::from(build_provider(config)?), subagent_registry);
+    subagent::register(
+        &mut registry,
+        Arc::from(build_provider(config)?),
+        subagent_registry,
+        Some(hooks.clone()),
+    );
 
     // Spawn the default renderer (stdout + stdin approval prompts)
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
     // Create agent components
-    let memory = ConversationMemory::new(config.agent.system_prompt.clone());
+    // G9 (s07): skill layer-1 descriptions join the base system prompt
+    // (the executor's prompt assembly carries them from turn one);
+    // `resume` restores an existing conversation instead.
+    let mut skill_registry = SkillRegistry::default();
+    if let Err(e) = skill_registry.load_from(&workspace.join("skills")) {
+        tracing::debug!(error = %e, "skills directory unavailable");
+    }
+    let system_prompt = with_layer1(&config.agent.system_prompt, &skill_registry);
+    let memory = match initial_memory {
+        Some(memory) => memory,
+        None => ConversationMemory::new(system_prompt),
+    };
     let planner = Planner::new(config.agent.max_turns);
-    let session =
-        crate::agent::executor::SessionState { todo, background, hooks, cron, mcp: mcp_registry };
-    let mut executor = Executor::new(provider, registry, auto_approve, runtime, session);
+    let session = crate::agent::executor::SessionState {
+        todo: Arc::new(Mutex::new(TodoManager::default())),
+        background,
+        hooks,
+        cron,
+        mcp: mcp_registry,
+        compact_request,
+    };
+    let mut executor =
+        Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
 
     // Start the task
     tracing::info!("Starting task: {}", task);
-    // `stream = false` keeps the plain chat call (default behavior);
-    // streaming (typewriter) is a REPL enhancement the serve/session
-    // layer can opt into via the executor's `run(.., stream)` flag.
-    executor.run(task, &planner, memory, max_turns, false).await?;
+    // `stream` flows from `lcode run --stream` (G11): the provider's
+    // `chat_stream` (real SSE for openai/anthropic) publishes token
+    // deltas as they arrive; `false` keeps the plain chat call (the
+    // REPL default).
+    executor.run(task, &planner, memory, max_turns, stream).await?;
 
     // Wait for the renderer to drain the remaining events
     let _ = renderer.await;
@@ -196,7 +321,15 @@ pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
         ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
         ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
     };
-    Ok(Box::new(RetryProvider::new(inner, RetryPolicy::default())))
+    let retry = RetryProvider::with_fallback(
+        inner,
+        RetryPolicy::default(),
+        config.llm.fallback_model.clone(),
+    );
+    // Seed the retry budget (and thus the inner provider's request body)
+    // with the configured max_tokens instead of the hardcoded default.
+    retry.set_max_tokens(config.llm.max_tokens);
+    Ok(Box::new(retry))
 }
 
 /// Resolve the workspace root for session state (skills dir, task board,

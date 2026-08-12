@@ -23,6 +23,14 @@ impl ConversationMemory {
         Self { system_prompt, messages: Vec::new(), max_messages: 200 }
     }
 
+    /// Build a memory pre-seeded with an existing message history (e.g. a
+    /// restored session snapshot). Mirrors [`Self::new`]: the system
+    /// prompt is kept separately and prepended by [`Self::get_context`],
+    /// so `messages` should not contain system-role entries.
+    pub fn from_messages(system_prompt: String, messages: Vec<ChatMessage>) -> Self {
+        Self { system_prompt, messages, max_messages: 200 }
+    }
+
     /// Add a system message (typically only one at the start).
     pub fn add_system(&mut self, content: impl Into<String>) {
         self.messages.push(ChatMessage::system(content));
@@ -68,6 +76,21 @@ impl ConversationMemory {
     }
 
     /// Get only the conversation messages (no system prompt).
+    /// The current system prompt text.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
+    /// Replace the system prompt (e.g. after re-assembly in s10).
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = prompt;
+    }
+
+    /// Mutable access to the message list (used by context compaction).
+    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        &mut self.messages
+    }
+
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
     }

@@ -80,6 +80,7 @@ fn executor_with_queue(
                 hooks: Arc::new(lcode::agent::HookRegistry::default()),
                 cron,
                 mcp: Arc::new(std::sync::Mutex::new(lcode::agent::McpRegistry::default())),
+                compact_request: Arc::new(std::sync::Mutex::new(None)),
             },
         ),
         call_count,
@@ -134,7 +135,10 @@ async fn test_run_completes_on_stop_and_records_assistant_message() {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].len(), 2);
         assert!(matches!(recorded[0][0].role, Role::System));
-        assert_eq!(recorded[0][0].content, "You are a helpful assistant.");
+        assert!(
+            recorded[0][0].content.contains("You are a helpful assistant."),
+            "Role section missing from assembled prompt"
+        );
         assert!(matches!(recorded[0][1].role, Role::User));
         assert!(recorded[0][1].content.contains("Write a test"));
     } // guard dropped before any await

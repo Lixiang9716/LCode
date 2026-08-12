@@ -4,7 +4,7 @@
 //! the summary, tool-call responses execute registry tools and backfill
 //! results, and the turn budget caps runaway loops.
 
-use lcode::agent::{run_subagent, TaskTool};
+use lcode::agent::{deny_tool, run_subagent, HookPoint, HookRegistry, TaskTool};
 use lcode::config::Config;
 use lcode::llm::provider::MockLlmProvider;
 use lcode::llm::{
@@ -51,7 +51,7 @@ async fn test_subagent_stop_returns_summary_with_fresh_context() {
         mock_with_queue(vec![response("Found the bug in login.rs.", FinishReason::Stop, None)]);
     let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-    let summary = run_subagent("Find the bug", provider, &registry, 30).await.unwrap();
+    let summary = run_subagent("Find the bug", provider, &registry, 30, None).await.unwrap();
     assert_eq!(summary, "Found the bug in login.rs.");
 
     // The subagent starts from a fresh context: exactly one user message
@@ -68,7 +68,7 @@ async fn test_subagent_empty_final_text_falls_back() {
     let (provider, _seen) = mock_with_queue(vec![response("   ", FinishReason::Stop, None)]);
     let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-    let summary = run_subagent("Do nothing", provider, &registry, 30).await.unwrap();
+    let summary = run_subagent("Do nothing", provider, &registry, 30, None).await.unwrap();
     assert_eq!(summary, "(no summary)");
 }
 
@@ -94,7 +94,7 @@ async fn test_subagent_executes_registry_tools() {
     ]);
 
     let summary =
-        run_subagent("Write sub.txt", provider, &registry, 30).await.expect("subagent runs");
+        run_subagent("Write sub.txt", provider, &registry, 30, None).await.expect("subagent runs");
     std::env::set_current_dir(&original_cwd).expect("restore cwd");
 
     // The registry tool actually executed inside the subagent.
@@ -126,9 +126,51 @@ async fn test_subagent_hits_turn_budget_without_summary() {
     ]);
     let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-    let summary = run_subagent("Loop forever", provider, &registry, 2).await.unwrap();
+    let summary = run_subagent("Loop forever", provider, &registry, 2, None).await.unwrap();
     assert_eq!(summary, "(no summary)");
     assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_subagent_pre_tool_use_hooks_block_tools() {
+    // G12: subagent tool calls must pass through the session's PreToolUse
+    // hooks. A hook denying `shell` must cancel the call — the shell tool
+    // would happily run `echo pwned`, so a "blocked by hook" result proves
+    // the interception happened before execution.
+    let mut hooks = HookRegistry::default();
+    hooks.add(HookPoint::PreToolUse, deny_tool("shell", "subagents may not run shell"));
+    let call = ToolCallRequest {
+        id: "call_1".to_string(),
+        call_type: "function".to_string(),
+        function: FunctionCall {
+            name: "shell".to_string(),
+            arguments: r#"{"command":"echo pwned"}"#.to_string(),
+        },
+    };
+    let (provider, seen) = mock_with_queue(vec![
+        response("Running.", FinishReason::ToolCalls, Some(vec![call])),
+        response("Done.", FinishReason::Stop, None),
+    ]);
+    let registry = ToolRegistry::new(&Config::default()).unwrap();
+
+    let summary =
+        run_subagent("Try shell", provider, &registry, 30, Some(Arc::new(hooks))).await.unwrap();
+    assert_eq!(summary, "Done.");
+
+    let calls = seen.lock().unwrap();
+    assert_eq!(calls.len(), 2, "two LLM calls: tool turn + final turn");
+    let tool_result = &calls[1][2];
+    assert!(matches!(tool_result.role, Role::Tool));
+    assert!(
+        tool_result.content.contains("blocked by hook"),
+        "expected a hook-blocked result, got: {}",
+        tool_result.content
+    );
+    assert!(
+        !tool_result.content.contains("pwned"),
+        "the shell tool must not have executed: {}",
+        tool_result.content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -138,7 +180,7 @@ async fn test_task_tool_executes_subagent_via_block_on() {
     let (provider, _seen) =
         mock_with_queue(vec![response("Summary from subagent.", FinishReason::Stop, None)]);
     let registry = Arc::new(ToolRegistry::new(&Config::default()).unwrap());
-    let tool = TaskTool { provider, registry };
+    let tool = TaskTool { provider, registry, hooks: None };
 
     let result =
         tool.execute(&serde_json::json!({ "prompt": "investigate", "max_turns": 5 })).unwrap();
@@ -150,7 +192,7 @@ async fn test_task_tool_executes_subagent_via_block_on() {
 async fn test_task_tool_requires_prompt_argument() {
     let (provider, _seen) = mock_with_queue(vec![]);
     let registry = Arc::new(ToolRegistry::new(&Config::default()).unwrap());
-    let tool = TaskTool { provider, registry };
+    let tool = TaskTool { provider, registry, hooks: None };
 
     assert!(tool.execute(&serde_json::json!({})).is_err());
 }
@@ -161,7 +203,7 @@ fn test_task_tool_requires_runtime_context() {
     // cleanly instead of panicking.
     let (provider, _seen) = mock_with_queue(vec![]);
     let registry = Arc::new(ToolRegistry::new(&Config::default()).unwrap());
-    let tool = TaskTool { provider, registry };
+    let tool = TaskTool { provider, registry, hooks: None };
 
     let err = tool.execute(&serde_json::json!({ "prompt": "x" })).unwrap_err();
     assert!(err.to_string().contains("runtime"), "error: {err}");
@@ -171,7 +213,7 @@ fn test_task_tool_requires_runtime_context() {
 fn test_task_tool_parameters_schema() {
     let (provider, _seen) = mock_with_queue(vec![]);
     let registry = Arc::new(ToolRegistry::new(&Config::default()).unwrap());
-    let tool = TaskTool { provider, registry };
+    let tool = TaskTool { provider, registry, hooks: None };
 
     let params = tool.parameters();
     assert_eq!(params["type"], "object");
