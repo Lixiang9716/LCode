@@ -15,6 +15,7 @@ use crate::agent::{
 };
 use crate::llm::{FinishReason, LlmProvider};
 use crate::tools::{ToolRegistry, ToolResult};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
@@ -68,6 +69,7 @@ pub struct Executor {
     pub(crate) cron: Arc<Mutex<CronScheduler>>,
     pub(crate) mcp: Arc<Mutex<McpRegistry>>,
     pub(crate) compact_request: Arc<Mutex<Option<String>>>,
+    pub(crate) prompt_too_long: std::sync::atomic::AtomicBool,
     pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
     pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
 }
@@ -92,6 +94,7 @@ impl Executor {
             cron: session.cron,
             mcp: session.mcp,
             compact_request: session.compact_request,
+            prompt_too_long: std::sync::atomic::AtomicBool::new(false),
             memory_store: session.memory_store,
             team_bus: session.team_bus,
         }
@@ -188,8 +191,17 @@ impl Executor {
         let tool_names: Vec<String> =
             self.registry.definitions().iter().map(|t| t.function.name.clone()).collect();
         let workspace = std::env::current_dir().unwrap_or_default();
-        let sections =
-            prompt::session_sections(memory.system_prompt(), &workspace, &tool_names, "", None);
+        // G3 (s09): the memory index (`.memory/MEMORY.md`) becomes the
+        // system prompt's Memory section so prior sessions' knowledge is
+        // visible from the first turn.
+        let memory_index = self.memory_store.as_ref().map(|s| s.index());
+        let sections = prompt::session_sections(
+            memory.system_prompt(),
+            &workspace,
+            &tool_names,
+            "",
+            memory_index.as_deref(),
+        );
         memory.set_system_prompt(prompt::assemble(&sections));
 
         Ok(false)
@@ -230,7 +242,18 @@ impl Executor {
             self.maybe_compact(memory).await?;
 
             let context = memory.get_context();
-            let response = self.call_llm(&context, &tool_defs, stream).await?;
+            let response = match self.call_llm(&context, &tool_defs, stream).await {
+                Ok(resp) => resp,
+                Err(e) if e.to_string().contains(crate::agent::retry::PROMPT_TOO_LONG_MARKER) => {
+                    // Reactive compaction (s11 path 2): mark and continue;
+                    // the next turn's maybe_compact compacts then retries.
+                    self.prompt_too_long.store(true, Ordering::SeqCst);
+                    let msg = format!("Context too long — compacting and retrying: {}", e);
+                    self.runtime.publish(AgentEvent::Error { message: msg });
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
 
             let finished = match self.handle_response(response, memory, stream).await? {
                 LoopControl::Stop => true,

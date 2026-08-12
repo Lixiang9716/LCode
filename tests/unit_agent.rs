@@ -19,8 +19,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-// Executor: the agent loop
-
 /// Build a `write_file` tool call with the given id and arguments.
 fn write_file_call(id: &str, args: &str) -> ToolCallRequest {
     ToolCallRequest {

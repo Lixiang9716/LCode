@@ -227,11 +227,9 @@ pub async fn run_task_with_memory(
         team_bus,
     ) = build_session(config, provider.clone())?;
 
-    // G3 (s09): cross-session memory. The store registers four tools;
-    // executor injection (stop extraction + per-turn index injection) is
-    // wired by the coordinator after the executor refactor lands (see
-    // `memory_store` module docs for the two integration points).
-    memory_store::register(&mut registry, &workspace, Arc::from(build_provider(config)?))?;
+    // G3 (s09): memory tools are registered inside build_session; the
+    // executor injects the index into the prompt (initialize_session)
+    // and persists memories at session end (persist_memories).
 
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
