@@ -117,7 +117,10 @@ pub async fn run_task(
     task::register(&mut registry, &workspace);
     team::register(&mut registry, &workspace);
     worktree::register(&mut registry, &workspace);
-    cron::register(&mut registry, &workspace);
+    // Cron (s14): one scheduler shared by the three cron tools and the
+    // executor, so tools manage jobs while the loop fires due ones.
+    let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
+    cron::register(&mut registry, cron.clone());
     mcp::register(&mut registry);
 
     // Subagent (s04): children run with a fresh registry holding only the
@@ -133,11 +136,14 @@ pub async fn run_task(
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
     let mut executor =
-        Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks);
+        Executor::new(provider, registry, auto_approve, runtime, todo, background, hooks, cron);
 
     // Start the task
     tracing::info!("Starting task: {}", task);
-    executor.run(task, &planner, memory, max_turns).await?;
+    // `stream = false` keeps the plain chat call (default behavior);
+    // streaming (typewriter) is a REPL enhancement the serve/session
+    // layer can opt into via the executor's `run(.., stream)` flag.
+    executor.run(task, &planner, memory, max_turns, false).await?;
 
     // Wait for the renderer to drain the remaining events
     let _ = renderer.await;

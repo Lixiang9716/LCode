@@ -439,9 +439,11 @@ impl Tool for CancelCronTool {
 }
 
 /// Register this module's tools with the registry. All three tools share
-/// a single [`CronScheduler`] so the job list stays consistent.
-pub fn register(registry: &mut crate::tools::ToolRegistry, workspace: &PathBuf) {
-    let scheduler = Arc::new(Mutex::new(CronScheduler::new(workspace)));
+/// a single [`CronScheduler`] so the job list stays consistent. The
+/// scheduler is created by the caller (see `run_task` in `mod.rs`) and
+/// also handed to the executor, so the agent loop can fire due jobs while
+/// the tools manage them.
+pub fn register(registry: &mut crate::tools::ToolRegistry, scheduler: Arc<Mutex<CronScheduler>>) {
     registry.register(Box::new(ScheduleCronTool { scheduler: scheduler.clone() }));
     registry.register(Box::new(ListCronsTool { scheduler: scheduler.clone() }));
     registry.register(Box::new(CancelCronTool { scheduler }));
