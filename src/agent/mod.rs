@@ -33,10 +33,12 @@ mod compaction;
 mod cron;
 mod event;
 mod executor;
+mod executor_hooks;
 mod hooks;
 mod mcp;
 mod memory;
 mod planner;
+mod prompt;
 mod render;
 mod retry;
 mod runtime;
@@ -65,6 +67,7 @@ pub use hooks::{
 pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
 pub use memory::{exact_tokens, ConversationMemory};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
+pub use prompt::PromptSection;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider};
 pub use runtime::{AgentRuntime, ApprovalDecision};
@@ -110,9 +113,10 @@ pub async fn run_task(
     let todo = Arc::new(Mutex::new(TodoManager::default()));
     todo::register(&mut registry, todo.clone());
     skill::register(&mut registry, workspace.join("skills"));
-    // The synchronous `compact` tool gets its own provider instance (as
-    // Arc) built from the same config; the executor owns the other one.
-    compaction::register(&mut registry, Arc::from(build_provider(config)?), workspace.clone());
+    // The `compact` tool requests compaction through a channel; the
+    // executor performs it on the live conversation at the next turn.
+    let compact_request = Arc::new(Mutex::new(None));
+    compaction::register(&mut registry, compact_request.clone());
     let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
     task::register(&mut registry, &workspace);
@@ -137,8 +141,14 @@ pub async fn run_task(
     // Create agent components
     let memory = ConversationMemory::new(config.agent.system_prompt.clone());
     let planner = Planner::new(config.agent.max_turns);
-    let session =
-        crate::agent::executor::SessionState { todo, background, hooks, cron, mcp: mcp_registry };
+    let session = crate::agent::executor::SessionState {
+        todo,
+        background,
+        hooks,
+        cron,
+        mcp: mcp_registry,
+        compact_request,
+    };
     let mut executor = Executor::new(provider, registry, auto_approve, runtime, session);
 
     // Start the task

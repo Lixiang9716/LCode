@@ -68,6 +68,21 @@ impl ConversationMemory {
     }
 
     /// Get only the conversation messages (no system prompt).
+    /// The current system prompt text.
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
+    /// Replace the system prompt (e.g. after re-assembly in s10).
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = prompt;
+    }
+
+    /// Mutable access to the message list (used by context compaction).
+    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        &mut self.messages
+    }
+
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
     }
