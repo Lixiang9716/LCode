@@ -77,6 +77,11 @@ pub struct AgentConfig {
     /// Maximum context window size (in tokens)
     #[serde(default = "default_context_size")]
     pub context_size: usize,
+
+    /// Directory containing skills (`SKILL.md` files). Defaults to
+    /// `<workspace>/skills` when unset (G9 / s07).
+    #[serde(default)]
+    pub skills_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -86,6 +91,7 @@ impl Default for AgentConfig {
             max_turns: default_max_turns(),
             require_approval: default_require_approval(),
             context_size: default_context_size(),
+            skills_dir: None,
         }
     }
 }

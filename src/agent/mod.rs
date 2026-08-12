@@ -37,6 +37,7 @@ mod executor_hooks;
 mod hooks;
 mod mcp;
 mod memory;
+mod memory_store;
 mod planner;
 mod prompt;
 mod render;
@@ -66,13 +67,17 @@ pub use hooks::{
 };
 pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
 pub use memory::{exact_tokens, ConversationMemory};
+pub use memory_store::{
+    ExtractMemoriesTool, ListMemoriesTool, MemoryFile, MemoryStore, ReadMemoryTool,
+    WriteMemoryTool, CONSOLIDATE_THRESHOLD,
+};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use prompt::PromptSection;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
-pub use skill::{LoadSkillTool, Skill, SkillRegistry};
+pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
 pub use team::{
@@ -112,7 +117,10 @@ pub async fn run_task(
     let workspace = std::env::current_dir()?;
     let todo = Arc::new(Mutex::new(TodoManager::default()));
     todo::register(&mut registry, todo.clone());
-    skill::register(&mut registry, workspace.join("skills"));
+    // G9 (s07): the skills directory is configurable, defaulting to
+    // `<workspace>/skills`.
+    let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
+    skill::register(&mut registry, skills_dir.clone());
     // The `compact` tool requests compaction through a channel; the
     // executor performs it on the live conversation at the next turn.
     let compact_request = Arc::new(Mutex::new(None));
@@ -129,6 +137,12 @@ pub async fn run_task(
     let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
     mcp::register(&mut registry, mcp_registry.clone());
 
+    // G3 (s09): cross-session memory. The store registers four tools;
+    // executor injection (stop extraction + per-turn index injection) is
+    // wired by the coordinator after the executor refactor lands (see
+    // `memory_store` module docs for the two integration points).
+    memory_store::register(&mut registry, &workspace, Arc::from(build_provider(config)?))?;
+
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
     // state) and their own provider instance.
@@ -139,7 +153,14 @@ pub async fn run_task(
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
     // Create agent components
-    let memory = ConversationMemory::new(config.agent.system_prompt.clone());
+    // G9 (s07): skill layer-1 — the catalog of one-line descriptions is
+    // part of the base system prompt, so the executor's prompt assembly
+    // naturally carries it from the first turn (`load_skill` still pulls
+    // full bodies on demand).
+    let mut skill_registry = SkillRegistry::default();
+    let _ = skill_registry.load_from(&skills_dir);
+    let system_prompt = with_layer1(&config.agent.system_prompt, &skill_registry);
+    let memory = ConversationMemory::new(system_prompt);
     let planner = Planner::new(config.agent.max_turns);
     let session = crate::agent::executor::SessionState {
         todo,
