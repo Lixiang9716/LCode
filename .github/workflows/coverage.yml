@@ -3,8 +3,8 @@ name: Code Coverage
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # Coverage runs on main only: tarpaulin's instrumented build cannot be
+  # cached, so running it on every PR would cost ~90s of duplicate work.
 
 jobs:
   coverage:
@@ -30,7 +30,9 @@ jobs:
           tar xzf cargo-tarpaulin-x86_64-unknown-linux-gnu.tar.gz -C /usr/local/bin
           cargo-tarpaulin --version
       - name: Generate coverage
-        run: cargo tarpaulin --out xml --output-dir coverage
+        # --run-types Tests skips doctests/benches/examples (doctests are
+        # slow and add little value); jobs default to CPU count.
+        run: cargo tarpaulin --out xml --output-dir coverage --run-types Tests
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
