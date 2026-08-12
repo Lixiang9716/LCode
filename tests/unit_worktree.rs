@@ -229,3 +229,50 @@ fn run_executes_in_worktree_with_safety_checks() {
     // Unknown worktree → error.
     assert!(m.run("ghost", "pwd").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// register: event-bus wiring (G14)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_wires_runtime_events_to_create_and_remove() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    init_repo(&ws);
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
+    lcode::agent::register_worktree_tools(&mut registry, &ws, Some(tx));
+
+    // Executing the registered tools publishes WorktreeCreated / Removed.
+    let result = registry
+        .execute("worktree_create", &serde_json::json!({ "name": "feature-x", "task_id": 42 }))
+        .unwrap();
+    assert!(result.success, "output: {}", result.output);
+    match rx.try_recv().unwrap() {
+        AgentEvent::WorktreeCreated { name, task_id } => {
+            assert_eq!(name, "feature-x");
+            assert_eq!(task_id, 42);
+        }
+        other => panic!("expected WorktreeCreated, got {:?}", other),
+    }
+
+    let result =
+        registry.execute("worktree_remove", &serde_json::json!({ "name": "feature-x" })).unwrap();
+    assert!(result.success, "output: {}", result.output);
+    match rx.try_recv().unwrap() {
+        AgentEvent::WorktreeRemoved { name } => assert_eq!(name, "feature-x"),
+        other => panic!("expected WorktreeRemoved, got {:?}", other),
+    }
+}
+
+#[test]
+fn register_without_events_still_registers_tools() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    let mut registry = lcode::tools::ToolRegistry::new(&lcode::config::Config::default()).unwrap();
+    lcode::agent::register_worktree_tools(&mut registry, &ws, None);
+    assert!(registry.list_tools().contains(&"worktree_create"));
+    assert!(registry.list_tools().contains(&"worktree_run"));
+    assert!(registry.list_tools().contains(&"worktree_remove"));
+}

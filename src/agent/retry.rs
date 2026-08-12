@@ -4,8 +4,11 @@
 //! server errors) with exponential backoff + jitter, upgrades max_tokens
 //! on truncation, and triggers reactive compaction on prompt-too-long.
 
-use crate::llm::{ChatMessage, FinishReason, LlmProvider, LlmResponse, ToolDefinition};
+use crate::llm::{
+    ChatMessage, FinishReason, LlmProvider, LlmResponse, StreamEvent, ToolDefinition,
+};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -259,6 +262,20 @@ impl LlmProvider for RetryProvider {
 
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Delegate streaming to the inner provider (G11).
+    ///
+    /// Retry/backoff applies to the plain `chat` path only: a delta
+    /// stream can fail mid-flight and has no single response to retry,
+    /// so real streaming is passed through untouched — the executor's
+    /// streaming path reassembles the deltas itself.
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        self.inner.chat_stream(messages, tools).await
     }
 
     fn validate(&self) -> anyhow::Result<()> {

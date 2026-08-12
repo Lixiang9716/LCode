@@ -12,13 +12,13 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Repl { prompt } => {
             crate::repl::start(prompt, cfg).await?;
         }
-        Command::Run { task, max_turns, auto_approve } => {
+        Command::Run { task, max_turns, auto_approve, stream } => {
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
                 anyhow::bail!("Task description cannot be empty. Usage: lcode run \"<task>\"");
             }
-            tracing::info!(task = %task_desc, max_turns, "Starting single-shot task");
-            crate::agent::run_task(&task_desc, max_turns, auto_approve, &cfg).await?;
+            tracing::info!(task = %task_desc, max_turns, stream, "Starting single-shot task");
+            crate::agent::run_task(&task_desc, max_turns, auto_approve, stream, &cfg).await?;
         }
         Command::Config { action } => {
             crate::config::handle_command(action)?;

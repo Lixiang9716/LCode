@@ -12,8 +12,7 @@
 //! [`MessageBus::drain_lead_inbox`] (read + format side lives here;
 //! executor wiring is owned by the executor batch).
 
-// The scaffold API takes `&PathBuf` (matching `register`'s skeleton
-// signature); keep it, so silence the ptr_arg lint.
+// Scaffold parity: register takes `&PathBuf`.
 #![allow(clippy::ptr_arg)]
 use crate::agent::event::AgentEvent;
 use crate::agent::protocol::{register as register_protocol_tools, ProtocolManager};
@@ -193,8 +192,8 @@ pub struct TeammateManager {
     env: Option<TeammateEnv>,
 }
 impl TeammateManager {
-    /// Create a manager rooted at `workspace/.team`, loading the roster
-    /// from `.team/config.json` if it exists (disk is the source of truth).
+    /// Create a manager rooted at `workspace/.team` (roster loaded from
+    /// `.team/config.json` when present; disk is the source of truth).
     pub fn new(workspace: &PathBuf) -> Self {
         let mut manager = Self { team_dir: workspace.join(".team"), ..Self::default() };
         manager.reload();
@@ -242,6 +241,7 @@ impl TeammateManager {
     /// the member in `.team/config.json` and starts [`run_teammate_loop`]
     /// as a tokio task (dropped with the runtime, mirroring s15 daemon
     /// threads) when a tokio runtime exists.
+
     pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
         if name.is_empty() {
             anyhow::bail!("Teammate name must not be empty");
@@ -458,6 +458,7 @@ pub fn register(
     let mut bus = MessageBus::new(workspace);
     if let Some(tx) = &events {
         bus.set_events(tx.clone());
+
     }
     let bus = Arc::new(bus);
     let protocol = Arc::new(ProtocolManager::default());
