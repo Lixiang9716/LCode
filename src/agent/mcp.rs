@@ -335,7 +335,12 @@ impl Tool for ConnectMcpTool {
 }
 
 /// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry) {
-    let registry_shared = Arc::new(Mutex::new(McpRegistry::default()));
-    registry.register(Box::new(ConnectMcpTool { registry: registry_shared }));
+///
+/// The registry is created by the caller (session scope) so the executor
+/// can share it for the dynamic per-turn tool pool.
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    mcp_registry: std::sync::Arc<std::sync::Mutex<McpRegistry>>,
+) {
+    registry.register(Box::new(ConnectMcpTool { registry: mcp_registry }));
 }
