@@ -58,11 +58,12 @@ mod todo;
 mod worktree;
 
 pub use background::{
-    BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask,
+    register as register_background_tools, BackgroundCheckTool, BackgroundManager,
+    BackgroundRunTool, BackgroundStatus, BackgroundTask,
 };
 pub use compaction::{
-    auto_compact, estimate_tokens, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
-    PRESERVE_RESULT_TOOLS,
+    auto_compact, estimate_tokens, micro_compact, register as register_compact_tool, CompactTool,
+    AUTO_COMPACT_THRESHOLD, KEEP_RECENT, PRESERVE_RESULT_TOOLS,
 };
 pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
 pub use event::{AgentCommand, AgentEvent};
@@ -90,10 +91,16 @@ pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
-pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
-pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
+pub use skill::{
+    register as register_skill_tools, with_layer1, LoadSkillTool, Skill, SkillRegistry,
+};
+pub use subagent::{
+    register as register_subagent_tools, run_subagent, run_subagents_parallel, TaskParallelTool,
+    TaskTool,
+};
 pub use task::{
-    Task, TaskClaimTool, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool,
+    register as register_task_tools, Task, TaskClaimTool, TaskCreateTool, TaskListTool,
+    TaskManager, TaskStatus, TaskUpdateTool,
 };
 pub use team::{
     register as register_team_tools, MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate,
@@ -102,7 +109,9 @@ pub use team::{
 pub use teammate::{
     handle_teammate_message, reinject_identity, run_teammate_loop, TeammateEnv, TeammateTools,
 };
-pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
+pub use todo::{
+    register as register_todo_tools, TodoItem, TodoManager, TodoStatus, TodoUpdateTool,
+};
 pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
