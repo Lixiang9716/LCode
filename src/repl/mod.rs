@@ -163,6 +163,14 @@ fn print_help() {
 
 /// Process a user input as a task.
 async fn process_input(input: &str, config: &Config) -> anyhow::Result<()> {
-    crate::agent::run_task(input, config.agent.max_turns, config.agent.require_approval, config)
-        .await
+    // The REPL stays on the plain (non-streamed) path; `lcode run
+    // --stream` enables the typewriter effect (G11).
+    crate::agent::run_task(
+        input,
+        config.agent.max_turns,
+        config.agent.require_approval,
+        false,
+        config,
+    )
+    .await
 }

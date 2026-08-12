@@ -429,8 +429,20 @@ impl Tool for WorktreeRemoveTool {
 }
 
 /// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry, workspace: &PathBuf) {
-    let manager = Arc::new(WorktreeManager::new(workspace));
+///
+/// `events` attaches the runtime event bus (G14) so worktree lifecycle
+/// events (`WorktreeCreated` / `WorktreeRemoved`) are also published to
+/// observers; pass `None` when no runtime exists (e.g. tests).
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    workspace: &PathBuf,
+    events: Option<broadcast::Sender<AgentEvent>>,
+) {
+    let mut manager = WorktreeManager::new(workspace);
+    if let Some(tx) = events {
+        manager.set_events(tx);
+    }
+    let manager = Arc::new(manager);
     registry.register(Box::new(WorktreeCreateTool { manager: manager.clone() }));
     registry.register(Box::new(WorktreeRunTool { manager: manager.clone() }));
     registry.register(Box::new(WorktreeRemoveTool { manager }));

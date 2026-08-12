@@ -9,6 +9,7 @@
 //! each `(label, prompt)` pair runs `run_subagent` in its own tokio task,
 //! and the results come back as `(label, summary)` pairs.
 
+use crate::agent::{HookContext, HookDecision, HookPoint, HookRegistry};
 use crate::llm::{ChatMessage, FinishReason};
 use crate::tools::{Tool, ToolResult};
 use std::sync::Arc;
@@ -22,11 +23,18 @@ const MAX_TOOL_RESULT_CHARS: usize = 50_000;
 ///
 /// The subagent shares the tool registry but not the conversation;
 /// returns the final assistant text (or "(no summary)").
+///
+/// `hooks` (G12): when present, every subagent tool call passes through
+/// the session's PreToolUse hooks first — a `Block` decision cancels the
+/// call (the result records the block) exactly like the executor's
+/// `handle_tool_call`, so permission policies cannot be bypassed by
+/// delegating work to a subagent. `None` keeps the pre-G12 behavior.
 pub async fn run_subagent(
     prompt: &str,
     provider: Arc<dyn crate::llm::LlmProvider>,
     registry: &crate::tools::ToolRegistry,
     max_turns: u32,
+    hooks: Option<Arc<HookRegistry>>,
 ) -> anyhow::Result<String> {
     // Fresh context: only the prompt (s04: context isolation).
     let mut messages = vec![ChatMessage::user(prompt.to_string())];
@@ -51,7 +59,24 @@ pub async fn run_subagent(
 
         // Execute every requested tool call and backfill the results.
         for tc in &tool_calls {
-            let args = serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+            let args: serde_json::Value =
+                serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+
+            // PreToolUse hooks: a Block decision cancels the call (G12).
+            if let Some(registry_hooks) = &hooks {
+                let ctx = HookContext {
+                    point: HookPoint::PreToolUse,
+                    tool_name: Some(tc.function.name.clone()),
+                    tool_args: Some(args.clone()),
+                    prompt: None,
+                };
+                if let HookDecision::Block { reason } = registry_hooks.run(&ctx) {
+                    let blocked = format!("Tool call blocked by hook: {}", reason);
+                    messages.push(ChatMessage::tool(blocked, tc.id.clone()));
+                    continue;
+                }
+            }
+
             let output = match registry.execute(&tc.function.name, &args) {
                 Ok(result) => format!("{result}"),
                 Err(e) => format!("Error: {e}"),
@@ -76,6 +101,7 @@ pub async fn run_subagents_parallel(
     provider: Arc<dyn crate::llm::LlmProvider>,
     registry: Arc<crate::tools::ToolRegistry>,
     max_turns: u32,
+    hooks: Option<Arc<HookRegistry>>,
 ) -> Vec<(String, String)> {
     let labels: Vec<String> = prompts.iter().map(|(label, _)| label.clone()).collect();
     let handles: Vec<tokio::task::JoinHandle<anyhow::Result<String>>> = prompts
@@ -83,7 +109,10 @@ pub async fn run_subagents_parallel(
         .map(|(_label, prompt)| {
             let provider = provider.clone();
             let registry = registry.clone();
-            tokio::spawn(async move { run_subagent(&prompt, provider, &registry, max_turns).await })
+            let hooks = hooks.clone();
+            tokio::spawn(async move {
+                run_subagent(&prompt, provider, &registry, max_turns, hooks).await
+            })
         })
         .collect();
 
@@ -103,6 +132,8 @@ pub async fn run_subagents_parallel(
 pub struct TaskTool {
     pub provider: Arc<dyn crate::llm::LlmProvider>,
     pub registry: Arc<crate::tools::ToolRegistry>,
+    /// Session PreToolUse hooks, forwarded to the subagent (G12).
+    pub hooks: Option<Arc<HookRegistry>>,
 }
 
 impl Tool for TaskTool {
@@ -149,7 +180,13 @@ impl Tool for TaskTool {
             .map_err(|_| anyhow::anyhow!("task tool requires a tokio runtime context"))?;
         let summary = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::current();
-            handle.block_on(run_subagent(prompt, self.provider.clone(), &self.registry, max_turns))
+            handle.block_on(run_subagent(
+                prompt,
+                self.provider.clone(),
+                &self.registry,
+                max_turns,
+                self.hooks.clone(),
+            ))
         })
         .map_err(|e| anyhow::anyhow!("subagent failed: {e}"))?;
         Ok(ToolResult::ok(summary))
@@ -157,16 +194,21 @@ impl Tool for TaskTool {
 }
 
 /// Register this module's tools with the registry.
+///
+/// `hooks` (G12): the session's PreToolUse hook registry, shared with the
+/// subagents these tools spawn; `None` keeps the pre-G12 behavior.
 pub fn register(
     registry: &mut crate::tools::ToolRegistry,
     provider: Arc<dyn crate::llm::LlmProvider>,
     registry_ref: Arc<crate::tools::ToolRegistry>,
+    hooks: Option<Arc<HookRegistry>>,
 ) {
     registry.register(Box::new(TaskTool {
         provider: provider.clone(),
         registry: registry_ref.clone(),
+        hooks: hooks.clone(),
     }));
-    registry.register(Box::new(TaskParallelTool { provider, registry: registry_ref }));
+    registry.register(Box::new(TaskParallelTool { provider, registry: registry_ref, hooks }));
 }
 
 /// Tool: `task_parallel` — fan out independent subtasks to subagents that
@@ -174,6 +216,8 @@ pub fn register(
 pub struct TaskParallelTool {
     pub provider: Arc<dyn crate::llm::LlmProvider>,
     pub registry: Arc<crate::tools::ToolRegistry>,
+    /// Session PreToolUse hooks, forwarded to the subagents (G12).
+    pub hooks: Option<Arc<HookRegistry>>,
 }
 
 impl Tool for TaskParallelTool {
@@ -233,6 +277,7 @@ impl Tool for TaskParallelTool {
                 self.provider.clone(),
                 self.registry.clone(),
                 max_turns,
+                self.hooks.clone(),
             ))
         });
         let output = if results.is_empty() {

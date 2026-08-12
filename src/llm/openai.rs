@@ -4,10 +4,14 @@
 //! (Ollama, vLLM, local models, etc.)
 
 use crate::config::LlmConfig;
+use crate::llm::sse::{sse_stream, SseData};
 use crate::llm::{
-    ChatMessage, FinishReason, LlmProvider, LlmResponse, ToolCallRequest, ToolDefinition, Usage,
+    ChatMessage, FinishReason, LlmProvider, LlmResponse, StreamEvent, ToolCallRequest,
+    ToolDefinition, Usage,
 };
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 
 /// OpenAI / OpenAI-compatible provider.
 pub struct OpenAiProvider {
@@ -50,20 +54,14 @@ impl LlmProvider for OpenAiProvider {
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-
-        // Build the request body
-        let mut body = serde_json::json!({
-            "model": self.model,
-            "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-        });
-
-        if !tools.is_empty() {
-            body["tools"] = serde_json::to_value(tools)?;
-            body["tool_choice"] = serde_json::json!("auto");
-        }
-
+        let body = build_body(
+            self.model.clone(),
+            self.max_tokens,
+            self.temperature,
+            messages,
+            tools,
+            false,
+        );
         let response = self
             .client
             .post(&url)
@@ -83,6 +81,50 @@ impl LlmProvider for OpenAiProvider {
         parse_response(&data)
     }
 
+    /// Real streaming (G11): the same chat body with `stream: true`; the
+    /// SSE response is consumed chunk by chunk, mapping each `data:` line
+    /// to a [`StreamEvent`] (`choices[0].delta.content` → `TextDelta`,
+    /// `finish_reason` → `Done`, `[DONE]` → `Done(Stop)`).
+    async fn chat_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
+        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+        let body = build_body(
+            self.model.clone(),
+            self.max_tokens,
+            self.temperature,
+            messages,
+            tools,
+            true,
+        );
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await?;
+            anyhow::bail!("OpenAI API error ({}): {}", status, text);
+        }
+
+        let stream = sse_stream(response).filter_map(|item| async move {
+            match item {
+                Ok(SseData::Json(data)) => openai_stream_event(&data).map(Ok),
+                Ok(SseData::Done) => Some(Ok(StreamEvent::Done(FinishReason::Stop))),
+                Ok(SseData::Other(_)) => None,
+                Err(e) => Some(Err(e)),
+            }
+        });
+        Ok(Box::pin(stream))
+    }
+
     fn name(&self) -> &str {
         "openai"
     }
@@ -95,6 +137,56 @@ impl LlmProvider for OpenAiProvider {
             anyhow::bail!("OpenAI model is not set");
         }
         Ok(())
+    }
+}
+
+/// Build the chat-completions request body; `stream` adds the
+/// `"stream": true` flag that makes the API answer with SSE deltas.
+fn build_body(
+    model: String,
+    max_tokens: u32,
+    temperature: f32,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    stream: bool,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": stream,
+    });
+
+    if !tools.is_empty() {
+        body["tools"] = serde_json::to_value(tools).unwrap();
+        body["tool_choice"] = serde_json::json!("auto");
+    }
+
+    body
+}
+
+/// Map one SSE chunk of an OpenAI streaming response to a
+/// [`StreamEvent`]: `choices[0].delta.content` becomes a `TextDelta`; a
+/// non-null `choices[0].finish_reason` ends the stream with `Done`.
+/// Chunks carrying neither (role-only deltas, empty deltas) map to
+/// `None` and are skipped by the stream consumer.
+#[doc(hidden)]
+pub fn openai_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
+    let choice = &data["choices"][0];
+    if let Some(content) = choice["delta"]["content"].as_str() {
+        if !content.is_empty() {
+            return Some(StreamEvent::TextDelta(content.to_string()));
+        }
+    }
+    match choice["finish_reason"].as_str() {
+        Some("stop") => Some(StreamEvent::Done(FinishReason::Stop)),
+        Some("length") => Some(StreamEvent::Done(FinishReason::Length)),
+        Some("tool_calls") => Some(StreamEvent::Done(FinishReason::ToolCalls)),
+        Some("content_filter") => Some(StreamEvent::Done(FinishReason::ContentFilter)),
+        Some(_) => Some(StreamEvent::Done(FinishReason::Unknown)),
+        // `finish_reason` is null or absent: intermediate chunk.
+        None => None,
     }
 }
 

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub mod anthropic;
 pub mod openai;
 pub mod provider;
+pub mod sse;
 
 pub use provider::LlmProvider;
 

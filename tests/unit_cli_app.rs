@@ -179,7 +179,8 @@ fn isolate_home(temp_dir: &tempfile::TempDir) {
 
 #[test]
 fn run_with_empty_task_returns_error() {
-    let cli = cli_with(Command::Run { task: vec![], max_turns: 50, auto_approve: false });
+    let cli =
+        cli_with(Command::Run { task: vec![], max_turns: 50, auto_approve: false, stream: false });
     let err = run_blocking(cli, Config::default()).unwrap_err();
     assert!(
         err.to_string().contains("Task description cannot be empty"),
@@ -193,8 +194,19 @@ fn run_with_whitespace_only_task_returns_error() {
         task: vec!["   ".to_string()],
         max_turns: 50,
         auto_approve: false,
+        stream: false,
     });
     assert!(run_blocking(cli, Config::default()).is_err());
+}
+
+#[test]
+fn run_stream_flag_parses() {
+    // `--stream` must parse and flow into the Command (G11).
+    let cli = Cli::try_parse_from(["lcode", "run", "--stream", "do it"]).unwrap();
+    match cli.command {
+        Some(Command::Run { stream, .. }) => assert!(stream, "--stream must be true"),
+        other => panic!("expected Run command, got {other:?}"),
+    }
 }
 
 // ------------------------------------------------------------------

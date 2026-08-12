@@ -4,12 +4,19 @@
 //! namespaced `mcp__{server}__{tool}` to avoid collisions with built-ins,
 //! and the tool pool is assembled per turn (built-ins + connected MCPs).
 //!
-//! Connection is simulated unless the URL is real HTTP:
+//! Connection paths (G13):
 //! - `mock://{name}` loads a built-in server (docs, deploy)
 //! - `file://{path}` loads `{"tools": [...]}` from a local JSON file
-//! - `http(s)://{url}` fetches `GET {url}/tools` (calls go to
-//!   `POST {url}/call`)
+//! - `command:{program} {args...}` spawns a real MCP server subprocess
+//!   and speaks JSON-RPC 2.0 over its stdio (LSP-style Content-Length
+//!   frames, the standard MCP stdio transport — see [`mcp_stdio`]).
+//!   Example: `command:npx -y @modelcontextprotocol/server-filesystem /tmp`
+//! - `http(s)://{url}` keeps the original custom REST protocol
+//!   (`GET {url}/tools`, `POST {url}/call`) — a legacy LCode extension,
+//!   not standard MCP HTTP transport; kept for compatibility and noted
+//!   here so a future workstream can migrate it.
 
+use crate::agent::mcp_stdio::StdioConnection;
 use crate::tools::{Tool, ToolResult};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -24,6 +31,9 @@ pub struct McpServer {
     pub tools: HashMap<String, (String, serde_json::Value)>,
     /// Permissions annotation: readOnly or destructive.
     pub permissions: HashMap<String, String>,
+    /// Live stdio subprocess for `command:` URLs (JSON-RPC over stdio);
+    /// `None` for mock/file/http connections.
+    pub(crate) stdio: Option<Arc<Mutex<StdioConnection>>>,
 }
 
 /// Manages connected MCP servers and their tools.
@@ -80,16 +90,32 @@ impl McpRegistry {
             url: url.to_string(),
             tools: HashMap::new(),
             permissions: HashMap::new(),
+            stdio: None,
         };
-        for entry in load_tools(url)? {
-            let params = if entry.parameters.is_null() {
-                serde_json::json!({ "type": "object", "properties": {} })
-            } else {
-                entry.parameters
-            };
-            server.tools.insert(entry.name.clone(), (entry.description, params));
-            if !entry.permissions.is_empty() {
-                server.permissions.insert(entry.name, entry.permissions);
+        if let Some(command) = url.strip_prefix("command:") {
+            // Real MCP stdio server (G13): spawn the subprocess and run
+            // the JSON-RPC handshake (initialize → initialized →
+            // tools/list). The connection stays open for the process
+            // lifetime; every `tools/call` goes to the same subprocess.
+            let mut conn = StdioConnection::spawn(command)?;
+            for tool in conn.connect_and_list_tools()? {
+                server.tools.insert(tool.name.clone(), (tool.description, tool.parameters));
+                if !tool.permissions.is_empty() {
+                    server.permissions.insert(tool.name, tool.permissions);
+                }
+            }
+            server.stdio = Some(Arc::new(Mutex::new(conn)));
+        } else {
+            for entry in load_tools(url)? {
+                let params = if entry.parameters.is_null() {
+                    serde_json::json!({ "type": "object", "properties": {} })
+                } else {
+                    entry.parameters
+                };
+                server.tools.insert(entry.name.clone(), (entry.description, params));
+                if !entry.permissions.is_empty() {
+                    server.permissions.insert(entry.name, entry.permissions);
+                }
             }
         }
         self.servers.insert(name.to_string(), server);
@@ -119,6 +145,12 @@ impl McpRegistry {
             .ok_or_else(|| anyhow::anyhow!("Unknown MCP server: {server}"))?;
         if !server_info.tools.contains_key(tool) {
             anyhow::bail!("Unknown MCP tool: {server}.{tool}");
+        }
+        if let Some(conn) = &server_info.stdio {
+            // Real MCP stdio server: `tools/call` over the live JSON-RPC
+            // connection (G13).
+            let mut conn = conn.lock().unwrap();
+            return conn.call_tool(tool, args);
         }
         if server_info.url.starts_with("http://") || server_info.url.starts_with("https://") {
             return http_call(&server_info.url, tool, args);

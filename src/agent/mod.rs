@@ -35,6 +35,7 @@ mod event;
 mod executor;
 mod hooks;
 mod mcp;
+mod mcp_stdio;
 mod memory;
 mod planner;
 mod render;
@@ -63,6 +64,8 @@ pub use hooks::{
     deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
 };
 pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
+// MCP stdio helpers (G13), exported for integration tests.
+pub use mcp_stdio::{parse_frame, split_command};
 pub use memory::{exact_tokens, ConversationMemory};
 pub use planner::{Plan, PlanStatus, PlanStep, Planner, StepStatus};
 pub use render::render_event;
@@ -73,10 +76,11 @@ pub use skill::{LoadSkillTool, Skill, SkillRegistry};
 pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
 pub use task::{Task, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool};
 pub use team::{
-    MessageBus, TeamMessage, Teammate, TeammateManager, TeammateState, VALID_MSG_TYPES,
+    register as register_team_tools, MessageBus, TeamMessage, Teammate, TeammateManager,
+    TeammateState, VALID_MSG_TYPES,
 };
 pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
-pub use worktree::{EventLog, WorktreeManager};
+pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
 ///
@@ -85,10 +89,17 @@ pub use worktree::{EventLog, WorktreeManager};
 /// stdin), registers the session tool set (todo/skill/task/background/
 /// team/worktree), and executes the task turn by turn until completion
 /// or `max_turns` is reached.
+///
+/// `stream` toggles real SSE streaming (G11): the provider's
+/// `chat_stream` publishes token deltas as they arrive instead of one
+/// plain `chat` response per turn. NOTE: this mirrors the executor's
+/// `run(.., stream)` flag; the executor refactor (batch 1) keeps both
+/// signatures in sync.
 pub async fn run_task(
     task: &str,
     max_turns: u32,
     auto_approve: bool,
+    stream: bool,
     config: &Config,
 ) -> anyhow::Result<()> {
     // Build the LLM provider
@@ -116,8 +127,11 @@ pub async fn run_task(
     let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
     task::register(&mut registry, &workspace);
-    team::register(&mut registry, &workspace);
-    worktree::register(&mut registry, &workspace);
+    // Team / worktree tools attach the runtime event bus (G14) so
+    // message sends, teammate state changes and worktree lifecycle
+    // events are published to observers alongside the loop events.
+    team::register(&mut registry, &workspace, Some(runtime.events_sender()));
+    worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
     // Cron (s14): one scheduler shared by the three cron tools and the
     // executor, so tools manage jobs while the loop fires due ones.
     let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
@@ -127,9 +141,15 @@ pub async fn run_task(
 
     // Subagent (s04): children run with a fresh registry holding only the
     // base tools (CHILD_TOOLS parity — no `task` re-delegation, no session
-    // state) and their own provider instance.
+    // state) and their own provider instance. The session hook registry
+    // is shared so PreToolUse policies (s20/G12) also gate subagent tools.
     let subagent_registry = Arc::new(ToolRegistry::new(config)?);
-    subagent::register(&mut registry, Arc::from(build_provider(config)?), subagent_registry);
+    subagent::register(
+        &mut registry,
+        Arc::from(build_provider(config)?),
+        subagent_registry,
+        Some(hooks.clone()),
+    );
 
     // Spawn the default renderer (stdout + stdin approval prompts)
     let renderer = render::spawn_renderer(events_rx, commands_tx);
@@ -143,10 +163,11 @@ pub async fn run_task(
 
     // Start the task
     tracing::info!("Starting task: {}", task);
-    // `stream = false` keeps the plain chat call (default behavior);
-    // streaming (typewriter) is a REPL enhancement the serve/session
-    // layer can opt into via the executor's `run(.., stream)` flag.
-    executor.run(task, &planner, memory, max_turns, false).await?;
+    // `stream` flows from `lcode run --stream` (G11): the provider's
+    // `chat_stream` (real SSE for openai/anthropic) publishes token
+    // deltas as they arrive; `false` keeps the plain chat call (the
+    // REPL default).
+    executor.run(task, &planner, memory, max_turns, stream).await?;
 
     // Wait for the renderer to drain the remaining events
     let _ = renderer.await;

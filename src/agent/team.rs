@@ -1,13 +1,10 @@
 //! Agent teams and protocols (learn-claude-code s09-s11).
 //!
-//! Teammates each run their own loop, communicating through filesystem
-//! JSONL mailboxes (append on send, drain on read), with an autonomous
-//! WORK/IDLE cycle and a shutdown handshake keyed by request_id (s10).
-//! Basic-version loop: no LLM — message read/write plus tool echo
-//! (send_message, read_inbox); production injects a provider.
+//! Teammates run their own loop over filesystem JSONL mailboxes with an
+//! autonomous WORK/IDLE cycle and a shutdown handshake (s10); basic
+//! version: no LLM — message read/write plus tool echo.
 
-// The scaffold API takes `&PathBuf` (matching `register`'s skeleton
-// signature); keep it, so silence the ptr_arg lint.
+// Scaffold parity: register takes `&PathBuf`.
 #![allow(clippy::ptr_arg)]
 use crate::agent::event::AgentEvent;
 use crate::tools::{Tool, ToolResult};
@@ -164,8 +161,8 @@ pub struct TeammateManager {
     events: Option<broadcast::Sender<AgentEvent>>,
 }
 impl TeammateManager {
-    /// Create a manager rooted at `workspace/.team`, loading the roster
-    /// from `.team/config.json` if it exists (disk is the source of truth).
+    /// Create a manager rooted at `workspace/.team` (roster loaded from
+    /// `.team/config.json` when present; disk is the source of truth).
     pub fn new(workspace: &PathBuf) -> Self {
         let mut manager = Self { team_dir: workspace.join(".team"), ..Self::default() };
         manager.reload();
@@ -204,10 +201,8 @@ impl TeammateManager {
             let _ = tx.send(event);
         }
     }
-    /// Spawn (or reuse an idle) teammate with the given role. Registers
-    /// the member in `.team/config.json` and starts the teammate loop
-    /// (`run_teammate_loop`) as a daemon task when a tokio runtime
-    /// exists; basic-version loop: no LLM.
+    /// Spawn (or reuse an idle) teammate; registers the member and starts
+    /// the loop as a daemon task (basic-version loop: no LLM).
     pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
         if name.is_empty() {
             anyhow::bail!("Teammate name must not be empty");
@@ -487,10 +482,18 @@ impl Tool for TeamTool {
     }
 }
 
-/// Register this module's tools with the registry.
-pub fn register(registry: &mut crate::tools::ToolRegistry, workspace: &PathBuf) {
-    let bus = Arc::new(MessageBus::new(workspace));
-    let manager = Arc::new(Mutex::new(TeammateManager::new(workspace)));
+/// Register this module's tools; `events` wires the runtime bus (G14).
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    workspace: &PathBuf,
+    events: Option<broadcast::Sender<AgentEvent>>,
+) {
+    let (mut bus, mut manager) = (MessageBus::new(workspace), TeammateManager::new(workspace));
+    if let Some(tx) = events {
+        bus.set_events(tx.clone());
+        manager.set_events(tx);
+    }
+    let (bus, manager) = (Arc::new(bus), Arc::new(Mutex::new(manager)));
     for kind in [TeamToolKind::Spawn, TeamToolKind::Send, TeamToolKind::Read, TeamToolKind::List] {
         registry.register(Box::new(TeamTool { kind, manager: manager.clone(), bus: bus.clone() }));
     }

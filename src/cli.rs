@@ -49,6 +49,10 @@ pub enum Command {
         /// Auto-approve all tool calls (use with caution!)
         #[arg(short = 'y', long)]
         auto_approve: bool,
+
+        /// Stream token deltas as they are generated (typewriter effect)
+        #[arg(long)]
+        stream: bool,
     },
 
     /// Manage LCode configuration
