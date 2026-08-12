@@ -131,3 +131,36 @@ async fn truncated_response_returned_as_is_when_attempts_exhausted() {
     assert_eq!(result.finish_reason, FinishReason::Length);
     assert_eq!(provider.upgrade_count(), 0);
 }
+
+/// The specific "tool_use without tool_result" 400 some Anthropic-
+/// compatible endpoints emit intermittently against valid wire messages
+/// is transient: retried until it succeeds (E2E regression — one such
+/// hiccup used to kill an otherwise healthy session).
+#[tokio::test]
+async fn retries_tool_result_400_hickup_then_succeeds() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls_clone = calls.clone();
+    let mut mock = MockLlmProvider::new();
+    mock.expect_chat().times(1..).returning(move |_, _| {
+        let n = calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            Err(anyhow::anyhow!(
+                "Anthropic API error (400): tool_use ids were found without tool_result blocks"
+            ))
+        } else {
+            Ok(LlmResponse {
+                content: "ok".to_string(),
+                tool_calls: None,
+                usage: Usage::default(),
+                finish_reason: FinishReason::Stop,
+            })
+        }
+    });
+    mock.expect_name().times(0..).return_const("mock".to_string());
+    mock.expect_validate().times(0..).returning(|| Ok(()));
+
+    let provider = RetryProvider::new(Box::new(mock), RetryPolicy::default());
+    let response = provider.chat(&[], &[]).await.expect("hickup retried to success");
+    assert_eq!(response.content, "ok");
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "exactly one retry");
+}

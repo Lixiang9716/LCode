@@ -98,6 +98,12 @@ impl RetryProvider {
             || msg.contains("500")
             || msg.contains("502")
             || msg.contains("503")
+            // Some Anthropic-compatible endpoints intermittently reject a
+            // well-formed tool_use/tool_result sequence with a 400
+            // (verified on the wire as valid). Retrying the same request
+            // succeeds; classify the specific complaint as transient.
+            || (msg.contains("400")
+                && msg.contains("tool_use ids were found without tool_result"))
     }
 
     /// Does this error indicate the prompt/context is too long for the

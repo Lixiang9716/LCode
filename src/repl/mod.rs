@@ -208,7 +208,7 @@ async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
             if let Err(e) = crate::agent::run_task_with_memory(
                 &snapshot.task,
                 config.agent.max_turns,
-                config.agent.require_approval,
+                !config.agent.require_approval,
                 false,
                 config,
                 Some(memory),
@@ -270,10 +270,13 @@ fn print_help() {
 async fn process_input(input: &str, config: &Config) -> anyhow::Result<()> {
     // The REPL stays on the plain (non-streamed) path; `lcode run
     // --stream` enables the typewriter effect (G11).
+    // `require_approval` means tools need approval, so auto-approve is
+    // its negation. Passing it directly inverted the semantics and made
+    // the REPL auto-approve everything by default (E2E regression).
     crate::agent::run_task(
         input,
         config.agent.max_turns,
-        config.agent.require_approval,
+        !config.agent.require_approval,
         false,
         config,
     )
