@@ -1,7 +1,8 @@
 //! Unit tests for streaming consumption in the executor: when `run` is
 //! called with `stream = true`, token deltas are published one by one as
-//! `TextGenerated` events (typewriter effect) and the accumulated text
-//! lands in the conversation memory as a single assistant message.
+//! `TextDelta` events (typewriter effect), their concatenation equals the
+//! full text, and the accumulated text lands in the conversation memory
+//! as a single assistant message.
 
 use lcode::agent::{
     AgentEvent, AgentRuntime, BackgroundManager, ConversationMemory, CronScheduler, Executor,
@@ -81,16 +82,18 @@ async fn test_streaming_publishes_each_delta_and_accumulates_text() {
     let memory =
         executor.run("stream task", &planner, memory, 5, true).await.expect("run should succeed");
 
-    // Each delta is published as its own TextGenerated event, in order.
+    // Each delta is published as its own TextDelta event, in order.
     let events = collect_events(events_rx).await;
     let deltas: Vec<&str> = events
         .iter()
         .filter_map(|e| match e {
-            AgentEvent::TextGenerated { content } => Some(content.as_str()),
+            AgentEvent::TextDelta { content } => Some(content.as_str()),
             _ => None,
         })
         .collect();
     assert_eq!(deltas, vec!["Hello ", "world"]);
+    // Concatenating the deltas in arrival order gives the full response.
+    assert_eq!(deltas.concat(), "Hello world");
 
     // The accumulated text is recorded as a single assistant message.
     let msgs = memory.messages();

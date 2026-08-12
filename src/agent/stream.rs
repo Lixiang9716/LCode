@@ -1,9 +1,9 @@
 //! Streaming LLM consumption (typewriter effect).
 //!
 //! [`Executor::call_llm`] switches between the plain `chat` call and the
-//! streaming path; [`Executor::chat_stream`] publishes every `TextDelta`
-//! as its own [`AgentEvent::TextGenerated`] so observers (REPL, tests)
-//! see tokens arrive incrementally, then reassembles the full response.
+//! streaming path; [`Executor::chat_stream`] publishes every delta as its
+//! own [`AgentEvent::TextDelta`] so observers (REPL, audit log) see
+//! tokens arrive incrementally, then reassembles the full response.
 
 use crate::agent::event::AgentEvent;
 use crate::agent::executor::Executor;
@@ -27,8 +27,8 @@ impl Executor {
         }
     }
 
-    /// Stream a chat completion, publishing every `TextDelta` as its own
-    /// [`AgentEvent::TextGenerated`] so observers (REPL, tests) see the
+    /// Stream a chat completion, publishing every delta as its own
+    /// [`AgentEvent::TextDelta`] so observers (REPL, audit log) see the
     /// typewriter effect, then reassemble the full [`LlmResponse`] from
     /// the accumulated text and the `Done` finish reason.
     ///
@@ -67,8 +67,9 @@ impl Executor {
 }
 
 /// Append a text delta to the accumulated content and publish it as a
-/// [`AgentEvent::TextGenerated`] event.
+/// [`AgentEvent::TextDelta`] event. Concatenating the deltas in arrival
+/// order reproduces the full response text.
 fn publish_delta(runtime: &AgentRuntime, content: &mut String, delta: String) {
     content.push_str(&delta);
-    runtime.publish(AgentEvent::TextGenerated { content: delta });
+    runtime.publish(AgentEvent::TextDelta { content: delta });
 }

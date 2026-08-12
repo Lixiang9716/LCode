@@ -17,6 +17,13 @@ pub fn render_event(event: &AgentEvent) {
         }
         AgentEvent::TurnStarted { .. } => {}
         AgentEvent::TextGenerated { content } => println!("\n{}", content),
+        // Streaming deltas print inline (typewriter); the accumulated
+        // text is suppressed by the executor so nothing is printed twice.
+        AgentEvent::TextDelta { content } => {
+            use std::io::Write;
+            print!("{content}");
+            let _ = std::io::stdout().flush();
+        }
         AgentEvent::ToolCallRequested { name, arguments, requires_approval, .. } => {
             let args = serde_json::to_string_pretty(arguments).unwrap_or_default();
             println!("\n🔧 Tool call: {}({})", name, args);

@@ -19,6 +19,10 @@ pub enum AgentEvent {
     TurnStarted { turn: u32 },
     /// The model produced assistant text.
     TextGenerated { content: String },
+    /// A streaming token delta (typewriter feed). Streamed responses
+    /// publish one event per delta; the full text is the concatenation
+    /// of the deltas in arrival order.
+    TextDelta { content: String },
     /// The model requested a tool call.
     ///
     /// When `requires_approval` is true, the runtime waits for an

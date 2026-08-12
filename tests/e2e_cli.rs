@@ -201,3 +201,73 @@ async fn e2e_run_tool_call_executes_and_loops() {
     // and nothing more.
     assert_eq!(requests.len(), 3, "agent loop should take exactly two turns\n{text}\n{bodies}");
 }
+
+/// Matches chat requests whose body carries `stream: true` — the
+/// streaming path uses SSE while non-streamed calls (memory extraction)
+/// expect plain JSON.
+struct StreamFlagMatcher;
+
+impl Match for StreamFlagMatcher {
+    fn matches(&self, request: &Request) -> bool {
+        let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+            return false;
+        };
+        body.get("stream").and_then(Value::as_bool).unwrap_or(false)
+    }
+}
+
+/// OpenAI-style SSE stream: two text deltas, then finish and [DONE].
+fn streaming_sse_response() -> ResponseTemplate {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                data: [DONE]\n\n";
+    ResponseTemplate::new(200)
+        .insert_header("Content-Type", "text/event-stream")
+        .set_body_string(body)
+}
+
+/// Streaming turn: `--stream` consumes SSE deltas, renders them inline,
+/// and the audit log records one `TextDelta` event per chunk.
+#[tokio::test]
+async fn e2e_run_stream_publishes_text_delta_events() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(StreamFlagMatcher)
+        .respond_with(streaming_sse_response())
+        .mount(&server)
+        .await;
+    // Non-streamed calls (session-end memory extraction) get plain JSON.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_response(""))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().expect("tempdir for e2e workspace");
+    let output = run_lcode(&server, tmp.path(), &["run", "say hi", "--stream"]).await;
+
+    let text = output_text(&output);
+    assert!(output.status.success(), "streamed run should exit 0\n{text}");
+    assert!(text.contains("Hello world"), "deltas render inline to stdout\n{text}");
+
+    // Audit log: one TextDelta event per SSE chunk, concatenating to the
+    // full text in arrival order.
+    let events_file = std::fs::read_dir(tmp.path().join(".transcripts"))
+        .expect("transcripts dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().contains("events_"))
+        .expect("event log written");
+    let log = std::fs::read_to_string(&events_file).expect("read events");
+    let mut deltas = Vec::new();
+    for line in log.lines() {
+        let value: Value = serde_json::from_str(line).expect("JSON line");
+        if let Some(delta) = value["event"]["TextDelta"]["content"].as_str() {
+            deltas.push(delta.to_string());
+        }
+    }
+    assert_eq!(deltas, vec!["Hello ".to_string(), "world".to_string()]);
+    assert_eq!(deltas.concat(), "Hello world");
+}
