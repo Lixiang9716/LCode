@@ -8,13 +8,19 @@ use crate::llm::{
     ChatMessage, FinishReason, LlmProvider, LlmResponse, ToolCallRequest, ToolDefinition, Usage,
 };
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// OpenAI / OpenAI-compatible provider.
 pub struct OpenAiProvider {
     api_key: String,
-    model: String,
+    /// Switched at runtime via [`LlmProvider::set_model`] (fallback
+    /// failover); interior mutability because `chat` takes `&self`.
+    model: Mutex<String>,
     api_base: String,
-    max_tokens: u32,
+    /// Current max_tokens budget; raised at runtime via
+    /// [`LlmProvider::set_max_tokens`] when a response is truncated.
+    max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
 }
@@ -33,9 +39,9 @@ impl OpenAiProvider {
 
         Ok(Self {
             api_key: config.api_key.clone(),
-            model: config.model.clone(),
+            model: Mutex::new(config.model.clone()),
             api_base,
-            max_tokens: config.max_tokens,
+            max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
             client: reqwest::Client::new(),
         })
@@ -52,10 +58,11 @@ impl LlmProvider for OpenAiProvider {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         // Build the request body
+        let model = self.model.lock().unwrap().clone();
         let mut body = serde_json::json!({
-            "model": self.model,
+            "model": model,
             "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
-            "max_tokens": self.max_tokens,
+            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
             "temperature": self.temperature,
         });
 
@@ -91,10 +98,18 @@ impl LlmProvider for OpenAiProvider {
         if self.api_key.is_empty() {
             anyhow::bail!("OpenAI API key is not set");
         }
-        if self.model.is_empty() {
+        if self.model.lock().unwrap().is_empty() {
             anyhow::bail!("OpenAI model is not set");
         }
         Ok(())
+    }
+
+    fn set_max_tokens(&self, n: u32) {
+        self.max_tokens.store(n, Ordering::Relaxed);
+    }
+
+    fn set_model(&self, model: String) {
+        *self.model.lock().unwrap() = model;
     }
 }
 

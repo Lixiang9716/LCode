@@ -6,6 +6,8 @@ use crate::llm::{
     ToolDefinition, Usage,
 };
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 /// Anthropic Claude provider.
 ///
@@ -14,9 +16,13 @@ use async_trait::async_trait;
 /// `https://api.anthropic.com/v1` endpoint is used.
 pub struct AnthropicProvider {
     api_key: String,
-    model: String,
+    /// Switched at runtime via [`LlmProvider::set_model`] (fallback
+    /// failover); interior mutability because `chat` takes `&self`.
+    model: Mutex<String>,
     api_base: String,
-    max_tokens: u32,
+    /// Current max_tokens budget; raised at runtime via
+    /// [`LlmProvider::set_max_tokens`] when a response is truncated.
+    max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
 }
@@ -44,9 +50,9 @@ impl AnthropicProvider {
         let api_base = config.api_base.clone().unwrap_or_else(|| DEFAULT_API_BASE.to_string());
         Ok(Self {
             api_key,
-            model: config.model.clone(),
+            model: Mutex::new(config.model.clone()),
             api_base,
-            max_tokens: config.max_tokens,
+            max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
             client: reqwest::Client::new(),
         })
@@ -87,8 +93,8 @@ impl LlmProvider for AnthropicProvider {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": self.model,
-            "max_tokens": self.max_tokens,
+            "model": self.model.lock().unwrap().clone(),
+            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
             "temperature": self.temperature,
             "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
         });
@@ -129,10 +135,18 @@ impl LlmProvider for AnthropicProvider {
         if self.api_key.is_empty() {
             anyhow::bail!("Anthropic API key is not set");
         }
-        if self.model.is_empty() {
+        if self.model.lock().unwrap().is_empty() {
             anyhow::bail!("Anthropic model is not set");
         }
         Ok(())
+    }
+
+    fn set_max_tokens(&self, n: u32) {
+        self.max_tokens.store(n, Ordering::Relaxed);
+    }
+
+    fn set_model(&self, model: String) {
+        *self.model.lock().unwrap() = model;
     }
 }
 

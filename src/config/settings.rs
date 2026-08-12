@@ -44,6 +44,11 @@ pub struct LlmConfig {
     /// Temperature for generation
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+
+    /// Model to fail over to when the primary model keeps failing (used
+    /// by the retry layer after `max_attempts` consecutive failures)
+    #[serde(default)]
+    pub fallback_model: Option<String>,
 }
 
 impl Default for LlmConfig {
@@ -55,6 +60,7 @@ impl Default for LlmConfig {
             api_base: None,
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
+            fallback_model: None,
         }
     }
 }

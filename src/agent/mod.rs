@@ -82,7 +82,7 @@ pub use protocol::{
     ReviewPlanTool, SubmitPlanTool,
 };
 pub use render::render_event;
-pub use retry::{RetryPolicy, RetryProvider};
+pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
 pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
@@ -102,16 +102,33 @@ pub use worktree::{EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
 ///
-/// Creates a fresh agent session bound to a new runtime, spawns the
-/// default stdout renderer (which also answers approval prompts via
-/// stdin), registers the session tool set (todo/skill/task/background/
-/// team/worktree), and executes the task turn by turn until completion
-/// or `max_turns` is reached.
+/// Thin wrapper over [`run_task_with_memory`] with a fresh, empty
+/// conversation memory.
 pub async fn run_task(
     task: &str,
     max_turns: u32,
     auto_approve: bool,
     config: &Config,
+) -> anyhow::Result<()> {
+    run_task_with_memory(task, max_turns, auto_approve, config, None).await
+}
+
+/// Run an agent task, optionally seeded with a restored conversation
+/// memory (session resume).
+///
+/// Creates a fresh agent session bound to a new runtime, spawns the
+/// default stdout renderer (which also answers approval prompts via
+/// stdin), registers the session tool set (todo/skill/task/background/
+/// team/worktree), and executes the task turn by turn until completion
+/// or `max_turns` is reached. `initial_memory` (e.g. loaded from a
+/// session snapshot) is used as-is; the executor injects the task
+/// description into the conversation like any other run.
+pub async fn run_task_with_memory(
+    task: &str,
+    max_turns: u32,
+    auto_approve: bool,
+    config: &Config,
+    initial_memory: Option<ConversationMemory>,
 ) -> anyhow::Result<()> {
     // Build the LLM provider
     let provider = build_provider(config)?;
@@ -183,14 +200,16 @@ pub async fn run_task(
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
     // Create agent components
-    // G9 (s07): skill layer-1 — the catalog of one-line descriptions is
-    // part of the base system prompt, so the executor's prompt assembly
-    // naturally carries it from the first turn (`load_skill` still pulls
-    // full bodies on demand).
+    // G9 (s07): skill layer-1 descriptions join the base system prompt
+    // (the executor's prompt assembly carries them from turn one);
+    // `resume` restores an existing conversation instead.
     let mut skill_registry = SkillRegistry::default();
     let _ = skill_registry.load_from(&skills_dir);
     let system_prompt = with_layer1(&config.agent.system_prompt, &skill_registry);
-    let memory = ConversationMemory::new(system_prompt);
+    let memory = match initial_memory {
+        Some(memory) => memory,
+        None => ConversationMemory::new(system_prompt),
+    };
     let planner = Planner::new(config.agent.max_turns);
     let session = crate::agent::executor::SessionState {
         todo,
@@ -257,7 +276,15 @@ pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
         ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
         ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
     };
-    Ok(Box::new(RetryProvider::new(inner, RetryPolicy::default())))
+    let retry = RetryProvider::with_fallback(
+        inner,
+        RetryPolicy::default(),
+        config.llm.fallback_model.clone(),
+    );
+    // Seed the retry budget (and thus the inner provider's request body)
+    // with the configured max_tokens instead of the hardcoded default.
+    retry.set_max_tokens(config.llm.max_tokens);
+    Ok(Box::new(retry))
 }
 
 /// Resolve the workspace root for session state (skills dir, task board,
