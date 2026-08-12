@@ -271,3 +271,43 @@ fn test_task_parallel_tool_parameters_schema() {
     assert!(item["properties"]["label"]["type"].is_string());
     assert!(params["properties"]["max_turns"]["type"].is_string());
 }
+
+/// Each subagent publishes exactly one `SubagentCompleted` (regression:
+/// both the loop exit and the parallel wrapper used to publish, doubling
+/// the event count).
+#[tokio::test]
+async fn subagent_completed_published_once_per_subagent() {
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let mut mock = lcode::llm::provider::MockLlmProvider::new();
+    mock.expect_chat().times(0..).returning(|_, _| {
+        Ok(lcode::llm::LlmResponse {
+            content: "done".to_string(),
+            tool_calls: None,
+            usage: lcode::llm::Usage::default(),
+            finish_reason: lcode::llm::FinishReason::Stop,
+        })
+    });
+    mock.expect_name().times(0..).return_const("mock".to_string());
+    mock.expect_validate().times(0..).returning(|| Ok(()));
+
+    let prompts =
+        vec![("a".to_string(), "task a".to_string()), ("b".to_string(), "task b".to_string())];
+    let results = lcode::agent::run_subagents_parallel(
+        prompts,
+        Arc::new(mock),
+        empty_registry(),
+        5,
+        None,
+        Some(tx),
+    )
+    .await;
+    assert_eq!(results.len(), 2);
+
+    let mut completed = 0usize;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, lcode::agent::AgentEvent::SubagentCompleted { .. }) {
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 2, "one SubagentCompleted per subagent");
+}

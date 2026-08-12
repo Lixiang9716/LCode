@@ -99,3 +99,80 @@ fn explicit_api_base_wins_over_alias_default() {
     let provider = build_provider(&cfg).expect("custom api_base must be accepted");
     assert_eq!(provider.name(), "anthropic");
 }
+
+// ---------------------------------------------------------------------------
+// Anthropic wire serialization: multi-tool-call turns (E2E regression —
+// DeepSeek's strict Anthropic endpoint rejected separate user messages
+// for each tool_result with a 400).
+// ---------------------------------------------------------------------------
+
+use lcode::llm::anthropic::anthropic_messages_to_json;
+use lcode::llm::{ChatMessage, FunctionCall, ToolCallRequest};
+
+/// Consecutive tool results merge into ONE user message whose
+/// `content` array pairs every tool_use in order.
+#[test]
+fn anthropic_serialization_merges_parallel_tool_results() {
+    let mut assistant = ChatMessage::assistant(String::new());
+    assistant.tool_calls = Some(vec![
+        ToolCallRequest {
+            id: "call-1".to_string(),
+            call_type: "function".to_string(),
+            function: FunctionCall { name: "read_file".to_string(), arguments: "{}".to_string() },
+        },
+        ToolCallRequest {
+            id: "call-2".to_string(),
+            call_type: "function".to_string(),
+            function: FunctionCall { name: "list_dir".to_string(), arguments: "{}".to_string() },
+        },
+    ]);
+    let messages = [
+        ChatMessage::user("task"),
+        assistant,
+        ChatMessage::tool("result-1".to_string(), "call-1".to_string()),
+        ChatMessage::tool("result-2".to_string(), "call-2".to_string()),
+    ];
+    let refs: Vec<&ChatMessage> = messages.iter().collect();
+    let json = anthropic_messages_to_json(&refs);
+
+    // user(task) + assistant(tool_use x2) + ONE merged user message.
+    assert_eq!(json.len(), 3, "tool results merge into one user message: {json:?}");
+    let merged = &json[2];
+    assert_eq!(merged["role"], "user");
+    let blocks = merged["content"].as_array().expect("content is a block array");
+    assert_eq!(blocks.len(), 2, "both tool_result blocks in one message");
+    assert_eq!(blocks[0]["type"], "tool_result");
+    assert_eq!(blocks[0]["tool_use_id"], "call-1");
+    assert_eq!(blocks[0]["content"], "result-1");
+    assert_eq!(blocks[1]["tool_use_id"], "call-2");
+    assert_eq!(blocks[1]["content"], "result-2");
+
+    // The assistant message still carries both tool_use blocks.
+    let assistant_json = &json[1];
+    let uses = assistant_json["content"].as_array().expect("assistant blocks");
+    assert_eq!(uses.len(), 2);
+    assert_eq!(uses[0]["id"], "call-1");
+    assert_eq!(uses[1]["id"], "call-2");
+}
+
+/// A lone tool result keeps its single-block shape (no behavior change
+/// for single tool calls).
+#[test]
+fn anthropic_serialization_keeps_single_tool_result_shape() {
+    let mut assistant = ChatMessage::assistant(String::new());
+    assistant.tool_calls = Some(vec![ToolCallRequest {
+        id: "call-1".to_string(),
+        call_type: "function".to_string(),
+        function: FunctionCall { name: "grep".to_string(), arguments: "{}".to_string() },
+    }]);
+    let messages = [
+        ChatMessage::user("task"),
+        assistant,
+        ChatMessage::tool("one".to_string(), "call-1".to_string()),
+    ];
+    let refs: Vec<&ChatMessage> = messages.iter().collect();
+    let json = anthropic_messages_to_json(&refs);
+    assert_eq!(json.len(), 3);
+    assert_eq!(json[2]["content"][0]["tool_use_id"], "call-1");
+    assert_eq!(json[2]["content"][0]["content"], "one");
+}

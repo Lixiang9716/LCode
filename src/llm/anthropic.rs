@@ -99,7 +99,7 @@ impl LlmProvider for AnthropicProvider {
             "model": self.model.lock().unwrap().clone(),
             "max_tokens": self.max_tokens.load(Ordering::Relaxed),
             "temperature": self.temperature,
-            "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
+            "messages": anthropic_messages_to_json(&chat_messages),
         });
 
         if !system_prompt.is_empty() {
@@ -221,7 +221,7 @@ fn stream_body(
         "max_tokens": provider.max_tokens,
         "temperature": provider.temperature,
         "stream": stream,
-        "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
+        "messages": anthropic_messages_to_json(&chat_messages),
     });
 
     if !system_prompt.is_empty() {
@@ -288,6 +288,41 @@ pub fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<&ChatMess
         messages.iter().filter(|m| !matches!(m.role, crate::llm::Role::System)).collect();
 
     (system_prompt, chat_messages)
+}
+
+/// Serialize a conversation for the Anthropic wire format.
+///
+/// Anthropic requires every `tool_use` of an assistant message to be
+/// paired by a `tool_result` in the immediately following user message,
+/// so consecutive tool-result messages are merged into a single user
+/// message carrying all result blocks in order (E2E regression: parallel
+/// tool calls in one assistant message were serialized as separate user
+/// messages and rejected with 400 by strict Anthropic-compatible APIs).
+#[doc(hidden)]
+pub fn anthropic_messages_to_json(messages: &[&ChatMessage]) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role == crate::llm::Role::Tool {
+            let mut results = Vec::new();
+            while i < messages.len() && messages[i].role == crate::llm::Role::Tool {
+                let tool = &messages[i];
+                if let Some(ref tool_id) = tool.tool_call_id {
+                    results.push(serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": tool.content,
+                    }));
+                }
+                i += 1;
+            }
+            out.push(serde_json::json!({ "role": "user", "content": results }));
+        } else {
+            out.push(anthropic_message_to_json(&messages[i]));
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Convert a ChatMessage to Anthropic-compatible JSON.

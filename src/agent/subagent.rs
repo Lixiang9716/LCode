@@ -144,10 +144,6 @@ pub async fn run_subagents_parallel(
             Ok(Err(e)) => format!("(subagent failed: {e})"),
             Err(e) => format!("(subagent task failed: {e})"),
         };
-        if let Some(tx) = &events {
-            let _ =
-                tx.send(crate::agent::AgentEvent::SubagentCompleted { summary: summary.clone() });
-        }
         results.push((label, summary));
     }
     results

@@ -252,7 +252,13 @@ impl Executor {
                     self.runtime.publish(AgentEvent::Error { message: msg });
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Unrecoverable call failure: publish the error so
+                    // observers (audit log) see why the session died,
+                    // then propagate.
+                    self.runtime.publish(AgentEvent::Error { message: e.to_string() });
+                    return Err(e);
+                }
             };
 
             let finished = match self.handle_response(response, memory, stream).await? {
