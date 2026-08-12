@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/Lixiang9716/LCode/compare/v0.6.0...v0.7.0) (2026-08-12)
+
+
+### Features
+
+* add lcode update (self-update from GitHub releases) ([8154c04](https://github.com/Lixiang9716/LCode/commit/8154c04907a1061269afc4dca3f869a3af2f8ae9))
+* add lcode update command (self-update from GitHub releases) ([12890a4](https://github.com/Lixiang9716/LCode/commit/12890a465efda700c7f8171a8aa5f84e753d1b1e))
+
 ## [0.6.0](https://github.com/Lixiang9716/LCode/compare/v0.5.0...v0.6.0) (2026-08-12)
 
 
