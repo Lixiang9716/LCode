@@ -1,4 +1,4 @@
-.PHONY: build dev test test-fast test-watch lint fmt fmt-check style changelog changelog-file audit cov clean install
+.PHONY: build dev test test-fast test-watch lint fmt fmt-check style changelog changelog-file audit cov clean install e2e
 
 build:          ## Build release binary
 	cargo build --release
@@ -48,3 +48,6 @@ changelog:      ## Preview changelog draft (git-cliff, unreleased)
 
 changelog-file: ## Rewrite CHANGELOG.md with git-cliff (overwrites!)
 	git-cliff -o CHANGELOG.md
+
+e2e:            ## Run the full E2E battery (offline; LCODE_E2E_API_KEY enables real-API tasks)
+	./scripts/e2e-battery.sh
