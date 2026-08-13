@@ -23,6 +23,7 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
             println!("  llm.thinking_disabled - Disable the provider's thinking mode (true/false)");
             println!("  llm.reasoning_effort  - Thinking effort: low / high / max");
             println!("  llm.internal_thinking_disabled - Force thinking off for internal calls (true/false)");
+            println!("  llm.budget_total_usd - Hard cost cap per session in USD (none to clear)");
             println!("  memory.json_lock    - Lock memory extraction replies to JSON via prefix (true/false)");
             println!("  agent.system_prompt - Custom system prompt");
             println!("  agent.max_turns     - Max conversation turns");
@@ -64,6 +65,11 @@ pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
             Ok(cfg.llm.reasoning_effort.map(|e| e.as_str().to_string()).unwrap_or_default())
         }
         "llm.internal_thinking_disabled" => Ok(cfg.llm.internal_thinking_disabled.to_string()),
+        "llm.budget_total_usd" => Ok(cfg
+            .llm
+            .budget_total_usd
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "(unset)".to_string())),
         "memory.json_lock" => Ok(cfg.memory.json_lock.to_string()),
         "agent.system_prompt" => Ok(cfg.agent.system_prompt.clone()),
         "agent.max_turns" => Ok(cfg.agent.max_turns.to_string()),
@@ -154,6 +160,13 @@ fn set_llm_value(llm: &mut crate::config::LlmConfig, key: &str, value: &str) -> 
             };
         }
         "internal_thinking_disabled" => llm.internal_thinking_disabled = value.parse()?,
+        "budget_total_usd" => {
+            llm.budget_total_usd = if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                Some(value.parse().map_err(|e: std::num::ParseFloatError| anyhow::anyhow!(e))?)
+            };
+        }
         other => anyhow::bail!("Unknown config key: llm.{other}"),
     }
     Ok(())

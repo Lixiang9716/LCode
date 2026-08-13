@@ -53,6 +53,8 @@ pub enum AgentEvent {
     },
     /// The task was aborted (user interrupt or max turns).
     TaskAborted { reason: String },
+    /// The session's hard cost budget was exceeded (P0 budget gate).
+    BudgetExceeded { spent_usd: f64, budget_usd: f64 },
     /// An unrecoverable error occurred.
     Error { message: String },
 

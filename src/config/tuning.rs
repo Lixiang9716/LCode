@@ -294,6 +294,12 @@ pub struct RuntimeTuning {
     /// URL fetches (read_file/write_file) ignore auto_approve and go
     /// through the approval channel when true.
     pub network_requires_approval: bool,
+    /// Hard cost cap for the session (None = no cap).
+    pub budget_total_usd: Option<f64>,
+    /// Spend ratio that triggers the one-shot budget warning.
+    pub budget_warning_ratio: f64,
+    /// Model used for cost estimation (pricing tier lookup).
+    pub cost_model: String,
 }
 
 impl RuntimeTuning {
@@ -310,6 +316,9 @@ impl RuntimeTuning {
             todo: cfg.todo.clone(),
             todo_nag_after_turns: cfg.agent.todo_nag_after_turns,
             network_requires_approval: cfg.tools.network_requires_approval,
+            budget_total_usd: cfg.llm.budget_total_usd,
+            budget_warning_ratio: cfg.llm.budget_warning_ratio,
+            cost_model: cfg.llm.model.clone(),
         }
     }
 }

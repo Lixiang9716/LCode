@@ -15,10 +15,9 @@ pub fn render_event(event: &AgentEvent) {
             println!("\n🤖 LCode Agent starting...\n");
             println!("Task: {}\n", task);
         }
-        AgentEvent::TurnStarted { .. } => {}
+        AgentEvent::TurnStarted { .. } | AgentEvent::TurnFinished { .. } => {}
         AgentEvent::TextGenerated { content } => println!("\n{}", content),
-        // Streaming deltas print inline (typewriter); the accumulated
-        // text is suppressed by the executor so nothing is printed twice.
+        // Streaming deltas print inline (typewriter); duplicates are suppressed.
         AgentEvent::TextDelta { content } => {
             use std::io::Write;
             print!("{content}");
@@ -36,9 +35,8 @@ pub fn render_event(event: &AgentEvent) {
         }
         AgentEvent::ToolCallFailed { error, .. } => println!("   ❌ {}", error),
         AgentEvent::ToolCallDeclined { .. } => println!("   ⏭️  Skipped (user declined)."),
-        AgentEvent::TurnFinished { .. } => {}
         AgentEvent::TaskFinished { turns, .. } => {
-            println!("\n✅ Task completed in {} turns.", turns);
+            println!("\n✅ Task completed in {} turns.", turns)
         }
         AgentEvent::UsageSummary {
             prompt_tokens,
@@ -47,22 +45,49 @@ pub fn render_event(event: &AgentEvent) {
             reasoning_tokens,
             ..
         } => {
-            let usage = crate::llm::Usage {
-                prompt_tokens: *prompt_tokens,
-                completion_tokens: *completion_tokens,
-                total_tokens: *prompt_tokens + *completion_tokens,
-                cache_hit_tokens: *cache_hit_tokens,
-                cache_miss_tokens: prompt_tokens.saturating_sub(*cache_hit_tokens),
-                reasoning_tokens: *reasoning_tokens,
-            };
-            println!("{}", crate::llm::usage_summary("", &usage));
+            render_usage_summary(
+                *prompt_tokens,
+                *completion_tokens,
+                *cache_hit_tokens,
+                *reasoning_tokens,
+            );
         }
         AgentEvent::TaskAborted { reason } => println!("\n⚠️  {}", reason),
+        AgentEvent::BudgetExceeded { spent_usd, budget_usd } => {
+            render_budget_exceeded(*spent_usd, *budget_usd)
+        }
         AgentEvent::Error { message } => println!("\n❌ {}", message),
 
         // --- Session capabilities (learn-claude-code parity) ---
         event => render_capability_event(event),
     }
+}
+
+/// Render the session usage summary line.
+fn render_usage_summary(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cache_hit_tokens: u32,
+    reasoning_tokens: u32,
+) {
+    let usage = crate::llm::Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        cache_hit_tokens,
+        cache_miss_tokens: prompt_tokens.saturating_sub(cache_hit_tokens),
+        reasoning_tokens,
+    };
+    println!("{}", crate::llm::usage_summary("", &usage));
+}
+
+/// Render the budget-exceeded banner.
+fn render_budget_exceeded(spent_usd: f64, budget_usd: f64) {
+    println!(
+        "\n💸 Budget exceeded: ${} of ${} spent — aborting",
+        crate::llm::format_cost(spent_usd),
+        crate::llm::format_cost(budget_usd)
+    );
 }
 
 /// Render the todo list snapshot.

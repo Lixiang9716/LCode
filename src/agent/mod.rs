@@ -340,16 +340,12 @@ async fn execute_session(
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
 ) -> anyhow::Result<TaskOutcome> {
-    // Audit trail: every event (turns, tool calls, subagents, background
-    // tasks, team messages, ...) lands in `.transcripts/events_{ts}.jsonl`
-    // with a timestamp, in arrival order. Fire-and-forget; the task ends
-    // when the event bus closes. Subscribed before the renderer takes
-    // `events_rx`, so no event published after this point is missed.
+    // Audit trail: every event lands in `.transcripts/events_{ts}.jsonl`
+    // in arrival order. Subscribed before the renderer, so nothing is missed.
     let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
-    // G9 (s07): skill layer-1 descriptions join the base system prompt;
-    // `resume` restores an existing conversation instead.
+    // G9 (s07): skill layer-1 descriptions join the system prompt.
     let mut skill_registry = SkillRegistry::default();
     if let Err(e) = skill_registry.load_from(&workspace.join("skills")) {
         tracing::debug!(error = %e, "skills directory unavailable");
@@ -385,36 +381,54 @@ async fn execute_session(
     // before awaiting the renderer, or the renderer never observes the
     // channel close and the process hangs after the task completes.
     let outcome = TaskOutcome { completed: !executor.aborted, turns: executor.last_turn };
-    // Session-level usage summary: token counts, cache hits and the
-    // estimated cost (provider pricing tier by configured model).
+    // Session-level usage summary: token/cache counts and cost.
     if !executor.aborted {
-        let usage = executor.last_usage.clone();
-        executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
-            agent: "lead".to_string(),
-            model: config.llm.model.clone(),
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            cache_hit_tokens: usage.cache_hit_tokens,
-            cache_miss_tokens: usage.cache_miss_tokens,
-            reasoning_tokens: usage.reasoning_tokens,
-            cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
-        });
+        publish_usage_summary(&executor, config);
     }
+    print_budget_status(config, &executor.last_usage);
     drop(executor);
 
     // Teammate loops hold the team event bus; without a shutdown signal
-    // they keep working after the session ends and the renderer never
-    // observes the channel close (the process hangs for minutes).
+    // they keep working and the renderer never sees the channel close.
     team_bus.shutdown();
 
     let _ = renderer.await;
 
-    // Per-agent usage: teammate loops persist their running totals to
-    // `.team/usage.jsonl`; the renderer await above guarantees they
-    // exited (they hold the team event bus), so the totals are final.
+    // Per-agent usage: teammates persist to `.team/usage.jsonl`; the
+    // renderer await above guarantees they exited, so totals are final.
     print_team_usage(&workspace, &config.llm.model);
     let _ = recorder.await;
     Ok(outcome)
+}
+
+/// Publish the session-level UsageSummary event (lead agent).
+fn publish_usage_summary(executor: &crate::agent::Executor, config: &Config) {
+    let usage = executor.last_usage.clone();
+    executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
+        agent: "lead".to_string(),
+        model: config.llm.model.clone(),
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        cache_hit_tokens: usage.cache_hit_tokens,
+        cache_miss_tokens: usage.cache_miss_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
+    });
+}
+
+/// P0 budget status line: spent vs cap when a cap is configured.
+fn print_budget_status(config: &Config, usage: &crate::llm::Usage) {
+    let Some(budget) = config.llm.budget_total_usd else {
+        return;
+    };
+    let spent = crate::llm::estimate_cost(&config.llm.model, usage);
+    let remaining = (budget - spent).max(0.0);
+    println!(
+        "💰 Budget: {} / {} spent ({} remaining)",
+        crate::llm::format_cost(spent),
+        crate::llm::format_cost(budget),
+        crate::llm::format_cost(remaining)
+    );
 }
 
 /// Print one usage line per teammate from `.team/usage.jsonl` (best

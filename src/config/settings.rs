@@ -116,6 +116,17 @@ pub struct LlmConfig {
     /// no benefit (measured 48 vs 531 tokens on the same task).
     #[serde(default = "default_internal_thinking_disabled")]
     pub internal_thinking_disabled: bool,
+
+    /// Hard cost cap for one session, USD. `None` (default) disables
+    /// the budget gate; when set, the session aborts as soon as the
+    /// estimated spend reaches the cap.
+    #[serde(default)]
+    pub budget_total_usd: Option<f64>,
+
+    /// Spend ratio (0..1) that triggers a one-shot budget warning
+    /// reminder in the conversation.
+    #[serde(default = "default_budget_warning_ratio")]
+    pub budget_warning_ratio: f64,
 }
 
 /// Reasoning effort tiers for DeepSeek v4's thinking mode.
@@ -140,6 +151,8 @@ impl Default for LlmConfig {
             thinking_disabled: false,
             reasoning_effort: None,
             internal_thinking_disabled: default_internal_thinking_disabled(),
+            budget_total_usd: None,
+            budget_warning_ratio: default_budget_warning_ratio(),
         }
     }
 }
@@ -348,6 +361,10 @@ pub fn default_denied_hosts() -> Vec<String> {
 #[doc(hidden)]
 pub fn default_network_requires_approval() -> bool {
     true
+}
+#[doc(hidden)]
+pub fn default_budget_warning_ratio() -> f64 {
+    0.8
 }
 #[doc(hidden)]
 pub fn default_sensitive_paths() -> Vec<String> {

@@ -165,6 +165,72 @@ impl Executor {
     }
 }
 
+/// The turn's LLM call with the prompt-too-long recovery path: `None`
+/// means "retry the turn after compaction", `Some` is the response.
+pub(crate) async fn call_llm_with_recovery(
+    executor: &mut Executor,
+    memory: &mut ConversationMemory,
+    tool_defs: &[ToolDefinition],
+    stream: bool,
+) -> anyhow::Result<Option<crate::llm::LlmResponse>> {
+    let context = memory.get_context();
+    match executor.call_llm(&context, tool_defs, stream).await {
+        Ok(resp) => Ok(Some(resp)),
+        Err(e) if e.to_string().contains(crate::agent::retry::PROMPT_TOO_LONG_MARKER) => {
+            // Reactive compaction (s11 path 2): mark and continue; the
+            // next turn's maybe_compact compacts then retries.
+            executor.prompt_too_long.store(true, std::sync::atomic::Ordering::SeqCst);
+            executor.runtime.publish(AgentEvent::Error {
+                message: format!("Context too long — compacting and retrying: {}", e),
+            });
+            Ok(None)
+        }
+        Err(e) => {
+            executor.runtime.publish(AgentEvent::Error { message: e.to_string() });
+            Err(e)
+        }
+    }
+}
+
+/// P0 budget gate: when a cap is configured, publish `BudgetExceeded`
+/// and return true once the estimated spend reaches it; inject the
+/// one-shot warning reminder at the ratio threshold.
+pub(crate) fn check_budget(
+    executor: &Executor,
+    budget_warned: &mut bool,
+    total_usage: &crate::llm::Usage,
+    memory: &mut ConversationMemory,
+) -> bool {
+    let Some(tuning) = &executor.tuning else {
+        return false;
+    };
+    let Some(cap) = tuning.budget_total_usd else {
+        return false;
+    };
+    let spent = crate::llm::estimate_cost(&tuning.cost_model, total_usage);
+    if spent >= cap {
+        executor.runtime.publish(AgentEvent::BudgetExceeded { spent_usd: spent, budget_usd: cap });
+        executor.runtime.publish(AgentEvent::TaskAborted {
+            reason: format!(
+                "Cost budget exceeded (${} of ${})",
+                crate::llm::format_cost(spent),
+                crate::llm::format_cost(cap)
+            ),
+        });
+        return true;
+    }
+    if !*budget_warned && spent >= cap * tuning.budget_warning_ratio {
+        *budget_warned = true;
+        memory.add_user(format!(
+            "<reminder>Budget warning: ~{:.0}% of the ${} session budget is spent. \
+             Finish the task with minimal further work.</reminder>",
+            tuning.budget_warning_ratio * 100.0,
+            crate::llm::format_cost(cap)
+        ));
+    }
+    false
+}
+
 /// The `web_search` server-tool declaration (P1-2): the schema is only
 /// informational — the API executes the search itself and returns the
 /// result in-band; the executor records it like a local tool result.

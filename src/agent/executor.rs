@@ -7,6 +7,7 @@
 //! event stream.
 
 use crate::agent::event::AgentEvent;
+use crate::agent::executor_hooks::check_budget;
 use crate::agent::prompt;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
@@ -15,7 +16,6 @@ use crate::agent::{
 };
 use crate::llm::LlmProvider;
 use crate::tools::{ToolRegistry, ToolResult};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
@@ -246,6 +246,7 @@ impl Executor {
         let mut turn = 0u32;
         let mut aborted = false;
         let mut total_usage = crate::llm::Usage::default();
+        let mut budget_warned = false;
         loop {
             if turn >= max_turns {
                 self.runtime.publish(AgentEvent::TaskAborted {
@@ -267,27 +268,21 @@ impl Executor {
             let tool_defs = self.tool_pool();
             self.maybe_compact(memory, &mut total_usage).await?;
 
-            let context = memory.get_context();
-            let response = match self.call_llm(&context, &tool_defs, stream).await {
-                Ok(resp) => resp,
-                Err(e) if e.to_string().contains(crate::agent::retry::PROMPT_TOO_LONG_MARKER) => {
-                    // Reactive compaction (s11 path 2): mark and continue;
-                    // the next turn's maybe_compact compacts then retries.
-                    self.prompt_too_long.store(true, Ordering::SeqCst);
-                    let msg = format!("Context too long — compacting and retrying: {}", e);
-                    self.runtime.publish(AgentEvent::Error { message: msg });
-                    continue;
-                }
-                Err(e) => {
-                    // Unrecoverable call failure: publish the error so
-                    // observers (audit log) see why the session died,
-                    // then propagate.
-                    self.runtime.publish(AgentEvent::Error { message: e.to_string() });
-                    return Err(e);
-                }
+            let Some(response) = crate::agent::executor_hooks::call_llm_with_recovery(
+                self, memory, &tool_defs, stream,
+            )
+            .await?
+            else {
+                continue;
             };
 
             crate::agent::executor_hooks::accumulate_usage(&mut total_usage, &response.usage);
+
+            // Budget gate (P0): warn at the ratio, abort at the cap.
+            if check_budget(self, &mut budget_warned, &total_usage, memory) {
+                aborted = true;
+                break;
+            }
 
             let finished = match self.handle_response(response, memory, stream).await? {
                 LoopControl::Stop => true,

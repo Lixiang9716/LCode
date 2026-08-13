@@ -233,6 +233,12 @@ fn merge_llm(base: &mut LlmConfig, other: LlmConfig) {
     if !other.internal_thinking_disabled {
         base.internal_thinking_disabled = false;
     }
+    if other.budget_total_usd.is_some() {
+        base.budget_total_usd = other.budget_total_usd;
+    }
+    if other.budget_warning_ratio != settings::default_budget_warning_ratio() {
+        base.budget_warning_ratio = other.budget_warning_ratio;
+    }
 }
 
 /// Apply the `LCODE_LLM_*` environment overrides.
@@ -270,5 +276,15 @@ fn apply_llm_env_overrides(llm: &mut LlmConfig) {
     }
     if let Ok(val) = std::env::var("LCODE_LLM_INTERNAL_THINKING_DISABLED") {
         llm.internal_thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_BUDGET_TOTAL_USD") {
+        if let Ok(budget) = val.parse::<f64>() {
+            llm.budget_total_usd = Some(budget);
+        }
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_BUDGET_WARNING_RATIO") {
+        if let Ok(ratio) = val.parse::<f64>() {
+            llm.budget_warning_ratio = ratio;
+        }
     }
 }

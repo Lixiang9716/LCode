@@ -117,6 +117,8 @@ fn provider_for(server: &MockServer) -> OpenAiProvider {
         thinking_disabled: false,
         reasoning_effort: None,
         internal_thinking_disabled: true,
+        budget_total_usd: None,
+        budget_warning_ratio: 0.8,
     };
     OpenAiProvider::new(&config).expect("provider should validate with a non-empty api_key")
 }
