@@ -123,7 +123,7 @@ fn anthropic_serialization_merges_parallel_tool_results() {
         ToolCallRequest {
             id: "call-2".to_string(),
             call_type: "function".to_string(),
-            function: FunctionCall { name: "list_dir".to_string(), arguments: "{}".to_string() },
+            function: FunctionCall { name: "write_file".to_string(), arguments: "{}".to_string() },
         },
     ]);
     let messages = [

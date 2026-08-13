@@ -387,7 +387,7 @@ fn tool_registry_registers_all_builtin_tools() {
     let registry = ToolRegistry::new(&Config::default()).expect("registry");
     let names = registry.list_tools();
 
-    for expected in ["read_file", "write_file", "edit_file", "list_dir", "grep", "glob", "shell"] {
+    for expected in ["read_file", "write_file", "grep", "glob", "shell"] {
         assert!(
             names.contains(&expected),
             "expected tool '{expected}' to be registered, got: {names:?}"
@@ -395,8 +395,8 @@ fn tool_registry_registers_all_builtin_tools() {
     }
 }
 
-/// End-to-end workflow: write_file → read_file → edit_file → grep, all
-/// operating on a temp directory through the `ToolRegistry`.
+/// End-to-end workflow: write_file → read_file → write_file(replace) →
+/// grep, all operating on a temp directory through the `ToolRegistry`.
 #[test]
 #[serial]
 fn file_tools_end_to_end_write_read_edit_grep() {
@@ -426,18 +426,17 @@ fn file_tools_end_to_end_write_read_edit_grep() {
     assert!(result.output.contains("hello world"));
     assert!(result.output.contains("second line"));
 
-    // edit_file replaces the unique match
+    // write_file replace replaces the unique match (edit semantics)
     let result = registry
         .execute(
-            "edit_file",
+            "write_file",
             &serde_json::json!({
                 "path": "notes.txt",
-                "old_string": "hello world",
-                "new_string": "hello rust"
+                "replace": { "old_string": "hello world", "new_string": "hello rust" }
             }),
         )
-        .expect("edit_file should run");
-    assert!(result.success, "edit_file failed: {}", result.output);
+        .expect("write_file replace should run");
+    assert!(result.success, "write_file replace failed: {}", result.output);
 
     // read_file confirms the edit
     let result = registry

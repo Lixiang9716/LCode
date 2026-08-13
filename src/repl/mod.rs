@@ -144,8 +144,6 @@ fn print_tools() {
     println!("Available tools:");
     println!("  read_file   - Read a file's contents");
     println!("  write_file  - Write content to a file");
-    println!("  edit_file   - Edit a file with find-and-replace");
-    println!("  list_dir    - List directory contents");
     println!("  grep        - Search file contents");
     println!("  glob        - Find files by pattern");
     println!("  shell       - Execute shell commands");

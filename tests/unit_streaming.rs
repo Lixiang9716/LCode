@@ -198,8 +198,8 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
                 id: "call-1".to_string(),
                 call_type: "function".to_string(),
                 function: lcode::llm::FunctionCall {
-                    name: "list_dir".to_string(),
-                    arguments: serde_json::json!({}).to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "missing.txt"}).to_string(),
                 },
             }]),
             usage: lcode::llm::Usage::default(),
@@ -234,7 +234,7 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
 
     let memory = ConversationMemory::new("sys".to_string());
     let planner = Planner::new(50);
-    // The tool call is executed (list_dir) and the loop continues.
+    // The tool call is executed (read_file) and the loop continues.
     let memory =
         executor.run("tool stream", &planner, memory, 5, true).await.expect("run should succeed");
     let events = collect_events(events_rx).await;
