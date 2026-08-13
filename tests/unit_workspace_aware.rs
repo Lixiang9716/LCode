@@ -62,6 +62,10 @@ async fn run_in(
     dir: &std::path::Path,
     workspace_aware: bool,
 ) -> (ConversationMemory, Vec<lcode::agent::AgentEvent>) {
+    // The process cwd is shared across the test binary's threads and
+    // the tools capture it at construction: chdir before building
+    // anything, and serialize the tests that rely on it.
+    let _guard = std::env::set_current_dir(dir);
     let mut mock = lcode::llm::provider::MockLlmProvider::new();
     mock.expect_chat().times(1).returning(|_, _| {
         Ok(LlmResponse {
@@ -83,7 +87,6 @@ async fn run_in(
         runtime,
         session(tuning(workspace_aware)),
     );
-    let _guard = std::env::set_current_dir(dir);
     let memory = executor
         .run("task", &Planner::new(10), ConversationMemory::new("sys".to_string()), 10, false)
         .await
@@ -99,6 +102,7 @@ async fn run_in(
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workspace_context_injected_when_enabled() {
     let dir = repo_with_changes();
     let (memory, events) = run_in(dir.path(), true).await;
@@ -123,6 +127,7 @@ async fn workspace_context_injected_when_enabled() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workspace_context_skipped_when_disabled() {
     let dir = repo_with_changes();
     let (memory, _) = run_in(dir.path(), false).await;
@@ -130,6 +135,7 @@ async fn workspace_context_skipped_when_disabled() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn workspace_context_skipped_outside_git_repo() {
     let dir = tempfile::TempDir::new().unwrap();
     let (memory, _) = run_in(dir.path(), true).await;
@@ -137,6 +143,7 @@ async fn workspace_context_skipped_outside_git_repo() {
 }
 
 #[test]
+#[serial_test::serial]
 fn workspace_context_caps_long_output() {
     // Not a git repo, but the cap helper is exercised directly via a
     // synthetic call: ensure truncate_chars is boundary-safe (no panic
