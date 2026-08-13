@@ -28,9 +28,6 @@ enum LoopControl {
     Abort,
 }
 
-/// Number of turns without a todo update before a nag is injected.
-pub(crate) const TODO_NAG_AFTER_TURNS: u32 = 3;
-
 /// Session-scoped state shared between the executor and the session
 /// tools (todo/skill/task/background/team/worktree/cron/mcp).
 pub struct SessionState {
@@ -48,6 +45,9 @@ pub struct SessionState {
     /// Team message bus (s09-s17): the lead's inbox is drained at
     /// turn-start so teammate replies reach the main conversation.
     pub team_bus: Option<Arc<crate::agent::MessageBus>>,
+    /// User-tunable runtime parameters (compaction/team/subagent/...).
+    /// `None` keeps the built-in defaults (tests).
+    pub tuning: Option<Arc<crate::config::RuntimeTuning>>,
 }
 
 /// The executor drives the agent loop.
@@ -72,6 +72,7 @@ pub struct Executor {
     pub(crate) prompt_too_long: std::sync::atomic::AtomicBool,
     pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
     pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
+    pub(crate) tuning: Option<Arc<crate::config::RuntimeTuning>>,
 }
 
 impl Executor {
@@ -97,6 +98,7 @@ impl Executor {
             prompt_too_long: std::sync::atomic::AtomicBool::new(false),
             memory_store: session.memory_store,
             team_bus: session.team_bus,
+            tuning: session.tuning,
         }
     }
 
@@ -252,7 +254,13 @@ impl Executor {
                     self.runtime.publish(AgentEvent::Error { message: msg });
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Unrecoverable call failure: publish the error so
+                    // observers (audit log) see why the session died,
+                    // then propagate.
+                    self.runtime.publish(AgentEvent::Error { message: e.to_string() });
+                    return Err(e);
+                }
             };
 
             let finished = match self.handle_response(response, memory, stream).await? {

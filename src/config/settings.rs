@@ -1,5 +1,9 @@
 //! Configuration data structures and their default values.
 
+use crate::config::tuning::{
+    BackgroundConfig, CompactionConfig, EventsConfig, MemoryConfig, RetryConfig, SubagentConfig,
+    TeamConfig, TodoConfig,
+};
 use serde::{Deserialize, Serialize};
 
 /// Main configuration structure.
@@ -16,6 +20,38 @@ pub struct Config {
     /// Tool-specific settings
     #[serde(default)]
     pub tools: ToolsConfig,
+
+    /// Context compaction tuning
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+
+    /// Teammate loop tuning
+    #[serde(default)]
+    pub team: TeamConfig,
+
+    /// Subagent delegation tuning
+    #[serde(default)]
+    pub subagent: SubagentConfig,
+
+    /// Cross-session memory tuning
+    #[serde(default)]
+    pub memory: MemoryConfig,
+
+    /// Background command tuning
+    #[serde(default)]
+    pub background: BackgroundConfig,
+
+    /// Retry/backoff tuning
+    #[serde(default)]
+    pub retry: RetryConfig,
+
+    /// Event bus / command channel capacities
+    #[serde(default)]
+    pub events: EventsConfig,
+
+    /// Todo list limits
+    #[serde(default)]
+    pub todo: TodoConfig,
 }
 
 /// LLM provider configuration.
@@ -88,6 +124,10 @@ pub struct AgentConfig {
     /// `<workspace>/skills` when unset (G9 / s07).
     #[serde(default)]
     pub skills_dir: Option<std::path::PathBuf>,
+
+    /// Turns without a todo update before the nag reminder fires (s03)
+    #[serde(default = "default_todo_nag_after_turns")]
+    pub todo_nag_after_turns: u32,
 }
 
 impl Default for AgentConfig {
@@ -98,6 +138,7 @@ impl Default for AgentConfig {
             require_approval: default_require_approval(),
             context_size: default_context_size(),
             skills_dir: None,
+            todo_nag_after_turns: default_todo_nag_after_turns(),
         }
     }
 }
@@ -173,6 +214,10 @@ pub fn default_require_approval() -> bool {
 #[doc(hidden)]
 pub fn default_context_size() -> usize {
     128000
+}
+#[doc(hidden)]
+pub fn default_todo_nag_after_turns() -> u32 {
+    3
 }
 pub(super) fn default_true() -> bool {
     true

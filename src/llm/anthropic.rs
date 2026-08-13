@@ -99,7 +99,7 @@ impl LlmProvider for AnthropicProvider {
             "model": self.model.lock().unwrap().clone(),
             "max_tokens": self.max_tokens.load(Ordering::Relaxed),
             "temperature": self.temperature,
-            "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
+            "messages": anthropic_messages_to_json(&chat_messages),
         });
 
         if !system_prompt.is_empty() {
@@ -133,8 +133,10 @@ impl LlmProvider for AnthropicProvider {
     /// Real streaming (G11): the same messages body with `stream: true`;
     /// the SSE response maps `content_block_delta` (text_delta) events to
     /// [`StreamEvent::TextDelta`] and the final `message_delta`'s
-    /// `stop_reason` to [`StreamEvent::Done`]. `[DONE]` and `message_stop`
-    /// are safe fallbacks that end the stream with `Done(Stop)`.
+    /// `stop_reason` to [`StreamEvent::Done`]. End-of-stream sentinels
+    /// (`[DONE]`) emit nothing: they must not overwrite the real
+    /// `stop_reason` (a `tool_use` stop followed by the sentinel would
+    /// otherwise collapse to `Stop` and silently drop the tool call).
     async fn chat_stream(
         &self,
         messages: &[ChatMessage],
@@ -161,7 +163,7 @@ impl LlmProvider for AnthropicProvider {
         let stream = sse_stream(response).filter_map(|item| async move {
             match item {
                 Ok(SseData::Json(data)) => anthropic_stream_event(&data).map(Ok),
-                Ok(SseData::Done) => Some(Ok(StreamEvent::Done(FinishReason::Stop))),
+                Ok(SseData::Done) => None,
                 Ok(SseData::Other(_)) => None,
                 Err(e) => Some(Err(e)),
             }
@@ -219,7 +221,7 @@ fn stream_body(
         "max_tokens": provider.max_tokens,
         "temperature": provider.temperature,
         "stream": stream,
-        "messages": chat_messages.iter().map(anthropic_message_to_json).collect::<Vec<_>>(),
+        "messages": anthropic_messages_to_json(&chat_messages),
     });
 
     if !system_prompt.is_empty() {
@@ -262,9 +264,11 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
                 _ => FinishReason::Unknown,
             }))
         }
-        // Final event of a message; a fallback in case `message_delta`
-        // was missing (some compatible endpoints omit it).
-        Some("message_stop") => Some(StreamEvent::Done(FinishReason::Stop)),
+        // End-of-message sentinel: emits nothing. The finish reason
+        // comes exclusively from `message_delta.stop_reason`; a fallback
+        // `Done(Stop)` here would overwrite a `tool_use` stop and make
+        // the executor treat a tool-call stream as a silent empty text.
+        Some("message_stop") => None,
         _ => None,
     }
 }
@@ -284,6 +288,41 @@ pub fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<&ChatMess
         messages.iter().filter(|m| !matches!(m.role, crate::llm::Role::System)).collect();
 
     (system_prompt, chat_messages)
+}
+
+/// Serialize a conversation for the Anthropic wire format.
+///
+/// Anthropic requires every `tool_use` of an assistant message to be
+/// paired by a `tool_result` in the immediately following user message,
+/// so consecutive tool-result messages are merged into a single user
+/// message carrying all result blocks in order (E2E regression: parallel
+/// tool calls in one assistant message were serialized as separate user
+/// messages and rejected with 400 by strict Anthropic-compatible APIs).
+#[doc(hidden)]
+pub fn anthropic_messages_to_json(messages: &[&ChatMessage]) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    let mut i = 0;
+    while i < messages.len() {
+        if messages[i].role == crate::llm::Role::Tool {
+            let mut results = Vec::new();
+            while i < messages.len() && messages[i].role == crate::llm::Role::Tool {
+                let tool = &messages[i];
+                if let Some(ref tool_id) = tool.tool_call_id {
+                    results.push(serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": tool.content,
+                    }));
+                }
+                i += 1;
+            }
+            out.push(serde_json::json!({ "role": "user", "content": results }));
+        } else {
+            out.push(anthropic_message_to_json(&messages[i]));
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Convert a ChatMessage to Anthropic-compatible JSON.

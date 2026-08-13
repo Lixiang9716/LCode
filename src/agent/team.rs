@@ -15,6 +15,10 @@
 // Scaffold parity: register takes `&PathBuf`.
 #![allow(clippy::ptr_arg)]
 use crate::agent::event::AgentEvent;
+pub use crate::agent::message_bus::{MessageBus, TeamMessage, VALID_MSG_TYPES};
+pub use crate::agent::message_bus::{
+    TEAMMATE_IDLE_INTERVAL, TEAMMATE_IDLE_POLLS, TEAMMATE_WORK_TURNS,
+};
 use crate::agent::protocol::{register as register_protocol_tools, ProtocolManager};
 use crate::agent::task::TaskManager;
 use crate::agent::teammate::{run_teammate_loop, TeammateEnv, TeammateTools};
@@ -22,112 +26,9 @@ use crate::llm::LlmProvider;
 use crate::tools::{Tool, ToolResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
-/// Valid team message types.
-pub const VALID_MSG_TYPES: &[&str] = &[
-    "text",
-    "request",
-    "response",
-    "shutdown_request",
-    "shutdown_response",
-    "plan_approval_request",
-    "plan_approval_response",
-];
-/// Loop constants: bounded WORK turns; IDLE polls every 5s up to 12 (60s).
-pub const TEAMMATE_WORK_TURNS: u32 = 50;
-pub const TEAMMATE_IDLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-pub const TEAMMATE_IDLE_POLLS: u32 = 12;
-/// A team message (one JSONL line in a `{to}.jsonl` inbox).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TeamMessage {
-    pub from: String,
-    pub to: String,
-    pub msg_type: String,
-    pub request_id: Option<String>,
-    pub content: String,
-}
-/// Filesystem message bus: `{to}.jsonl`, append on send, drain on read.
-#[derive(Debug)]
-pub struct MessageBus {
-    inbox_dir: PathBuf,
-    /// Runtime event bus publisher (skipped while `None`).
-    events: Option<broadcast::Sender<AgentEvent>>,
-}
-impl MessageBus {
-    pub fn new(workspace: &PathBuf) -> Self {
-        Self { inbox_dir: workspace.join(".team").join("inbox"), events: None }
-    }
-    pub(crate) fn from_inbox(inbox_dir: PathBuf) -> Self {
-        Self { inbox_dir, events: None }
-    }
-    /// Attach the runtime event bus so sends publish `TeamMessageSent`.
-    pub fn set_events(&mut self, events: broadcast::Sender<AgentEvent>) {
-        self.events = Some(events);
-    }
-    fn inbox_path(&self, name: &str) -> PathBuf {
-        self.inbox_dir.join(format!("{}.jsonl", name))
-    }
-    /// Append a message to the recipient's inbox (type-whitelisted).
-    pub fn send(&self, msg: &TeamMessage) -> anyhow::Result<()> {
-        if !VALID_MSG_TYPES.contains(&msg.msg_type.as_str()) {
-            anyhow::bail!("Invalid message type '{}'", msg.msg_type);
-        }
-        std::fs::create_dir_all(&self.inbox_dir)?;
-        let mut file =
-            std::fs::OpenOptions::new().create(true).append(true).open(self.inbox_path(&msg.to))?;
-        writeln!(file, "{}", serde_json::to_string(msg)?)?;
-        if let Some(tx) = &self.events {
-            let _ = tx.send(AgentEvent::TeamMessageSent {
-                from: msg.from.clone(),
-                to: msg.to.clone(),
-                msg_type: msg.msg_type.clone(),
-            });
-        }
-        Ok(())
-    }
-    /// Read all messages and clear the inbox (drain-on-read).
-    pub fn read_inbox(&self, name: &str) -> Vec<TeamMessage> {
-        let Ok(text) = std::fs::read_to_string(self.inbox_path(name)) else { return Vec::new() };
-        let messages: Vec<TeamMessage> =
-            text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
-        let _ = std::fs::write(self.inbox_path(name), "");
-        messages
-    }
-    /// Drain the lead's inbox and render it for injection into the main
-    /// agent conversation (executor integration point — module docs).
-    pub fn drain_lead_inbox(&self) -> (Vec<TeamMessage>, String) {
-        let messages = self.read_inbox("lead");
-        let text = if messages.is_empty() {
-            String::new()
-        } else {
-            let lines: Vec<String> = messages
-                .iter()
-                .map(|m| format!("From {} [{}]: {}", m.from, m.msg_type, m.content))
-                .collect();
-            format!("[Inbox]\n{}", lines.join("\n"))
-        };
-        (messages, text)
-    }
-    /// Broadcast to everyone except the sender.
-    pub fn broadcast(
-        &self,
-        sender: &str,
-        members: &[String],
-        msg: &TeamMessage,
-    ) -> anyhow::Result<()> {
-        for member in members {
-            if member != sender {
-                let mut m = msg.clone();
-                m.to = member.clone();
-                self.send(&m)?;
-            }
-        }
-        Ok(())
-    }
-}
 /// Lifecycle state of a teammate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TeammateState {
@@ -187,9 +88,6 @@ pub struct TeammateManager {
     team_dir: PathBuf,
     /// Runtime event bus publisher (skipped while `None`).
     events: Option<broadcast::Sender<AgentEvent>>,
-    /// Runtime environment passed to spawned loops (LLM provider, bus,
-    /// protocol, task board); `None` falls back to the basic no-LLM loop.
-    env: Option<TeammateEnv>,
 }
 impl TeammateManager {
     /// Create a manager rooted at `workspace/.team` (roster loaded from
@@ -202,11 +100,6 @@ impl TeammateManager {
     /// Attach the runtime event bus (skipped while `None`).
     pub fn set_events(&mut self, events: broadcast::Sender<AgentEvent>) {
         self.events = Some(events);
-    }
-    /// Attach the teammate runtime environment (provider, bus, protocol,
-    /// task board) so spawned loops run real agent loops.
-    pub fn set_env(&mut self, env: TeammateEnv) {
-        self.env = Some(env);
     }
     fn config_path(&self) -> Option<PathBuf> {
         (!self.team_dir.as_os_str().is_empty()).then(|| self.team_dir.join("config.json"))
@@ -237,11 +130,15 @@ impl TeammateManager {
             let _ = tx.send(event);
         }
     }
-    /// Spawn (or reuse an idle) teammate with the given role. Registers
-    /// the member in `.team/config.json` and starts [`run_teammate_loop`]
-    /// as a tokio task (dropped with the runtime, mirroring s15 daemon
-    /// threads) when a tokio runtime exists.
-    pub fn spawn(&mut self, name: &str, role: &str) -> anyhow::Result<Teammate> {
+    /// Spawn (or reuse an idle) teammate with the given role; starts
+    /// [`run_teammate_loop`] as a tokio task. `env` comes from the
+    /// caller; the manager never owns it, so no cycle forms.
+    pub fn spawn(
+        &mut self,
+        name: &str,
+        role: &str,
+        env: Option<&TeammateEnv>,
+    ) -> anyhow::Result<Teammate> {
         if name.is_empty() {
             anyhow::bail!("Teammate name must not be empty");
         }
@@ -260,7 +157,7 @@ impl TeammateManager {
             state: member.state.as_str().to_string(),
         });
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let env = match &self.env {
+            let env = match env {
                 Some(env) => env.clone(),
                 None => TeammateEnv::basic(&self.team_dir),
             };
@@ -284,7 +181,7 @@ impl TeammateManager {
         lines.join("\n")
     }
 }
-/// Persist one member's state to config.json (runs outside the manager lock).
+/// Persist one member's state to config.json (outside the manager lock).
 pub(crate) fn set_member_state(team_dir: &PathBuf, name: &str, state: TeammateState) {
     let path = team_dir.join("config.json");
     let mut config = std::fs::read_to_string(&path)
@@ -316,6 +213,8 @@ pub struct TeamTool {
     pub manager: Arc<Mutex<TeammateManager>>,
     pub bus: Arc<MessageBus>,
     pub protocol: Arc<ProtocolManager>,
+    /// Runtime env for spawned loops (tool-owned, breaks the cycle).
+    pub env: Option<TeammateEnv>,
 }
 /// Which team tool an instance of [`TeamTool`] implements.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -345,7 +244,10 @@ impl Tool for TeamTool {
                  shutdown_request, shutdown_response, plan_approval_request, \
                  plan_approval_response."
             }
-            TeamToolKind::Read => "Read and drain your inbox.",
+            TeamToolKind::Read => {
+                "Read and drain your inbox; wait_ms blocks until a message \
+                 arrives (max 60s) — for waiting on a teammate's plan."
+            }
             TeamToolKind::List => "List the current team roster.",
         }
     }
@@ -367,7 +269,10 @@ impl Tool for TeamTool {
             }),
             TeamToolKind::Read => serde_json::json!({
                 "type": "object",
-                "properties": { "name": { "type": "string" } },
+                "properties": {
+                    "name": { "type": "string" },
+                    "wait_ms": { "type": "integer", "description": "Max milliseconds to wait for a message" }
+                },
                 "required": []
             }),
             TeamToolKind::List => serde_json::json!({ "type": "object", "properties": {} }),
@@ -390,7 +295,7 @@ impl TeamTool {
             Ok(m) => m,
             Err(_) => return Ok(ToolResult::err("team manager lock poisoned")),
         };
-        let spawned = match manager.spawn(name, role) {
+        let spawned = match manager.spawn(name, role, self.env.as_ref()) {
             Ok(member) => member,
             Err(e) => return Ok(ToolResult::err(e.to_string())),
         };
@@ -412,6 +317,11 @@ impl TeamTool {
         }
     }
     fn execute_read(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
+        // Blocking read: teammates answer seconds slower than the lead's
+        // polling cadence (E2E regression: plans arrived post-session).
+        if let Some(ms) = args["wait_ms"].as_u64() {
+            std::thread::sleep(std::time::Duration::from_millis(ms.min(60_000)));
+        }
         let messages = self.bus.read_inbox(args["name"].as_str().unwrap_or("lead"));
         // Route protocol responses (s16) before handing them to the model.
         for msg in &messages {
@@ -453,6 +363,7 @@ pub fn register(
     workspace: &PathBuf,
     provider: Arc<dyn LlmProvider>,
     events: Option<broadcast::Sender<AgentEvent>>,
+    team_cfg: &crate::config::TeamConfig,
 ) {
     let mut bus = MessageBus::new(workspace);
     if let Some(tx) = &events {
@@ -470,29 +381,32 @@ pub fn register(
         if let Some(tx) = &events {
             guard.set_events(tx.clone());
         }
-        guard.set_env(TeammateEnv {
-            team_dir: workspace.join(".team"),
-            bus: bus.clone(),
-            provider: Some(provider),
-            protocol: protocol.clone(),
-            tasks: tasks.clone(),
-            tools: TeammateTools::new(
-                workspace,
-                manager.clone(),
-                bus.clone(),
-                protocol.clone(),
-                tasks.clone(),
-            ),
-            idle_interval: TEAMMATE_IDLE_INTERVAL,
-            idle_polls: TEAMMATE_IDLE_POLLS,
-        });
     }
+    // Owned by the tools, not the manager (they hold a strong `Arc` of
+    // it); the cycle would leak the event-bus sender past session end.
+    let env = TeammateEnv {
+        team_dir: workspace.join(".team"),
+        bus: bus.clone(),
+        provider: Some(provider),
+        protocol: protocol.clone(),
+        tasks: tasks.clone(),
+        tools: TeammateTools::new(
+            workspace,
+            manager.clone(),
+            bus.clone(),
+            protocol.clone(),
+            tasks.clone(),
+        ),
+        idle_interval: std::time::Duration::from_secs(team_cfg.idle_interval_secs),
+        idle_polls: team_cfg.idle_polls,
+    };
     for kind in [TeamToolKind::Spawn, TeamToolKind::Send, TeamToolKind::Read, TeamToolKind::List] {
         registry.register(Box::new(TeamTool {
             kind,
             manager: manager.clone(),
             bus: bus.clone(),
             protocol: protocol.clone(),
+            env: Some(env.clone()),
         }));
     }
     register_protocol_tools(registry, bus, protocol);

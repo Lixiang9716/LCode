@@ -7,7 +7,7 @@
 
 use crate::agent::compaction::{auto_compact, micro_compact, AUTO_COMPACT_THRESHOLD};
 use crate::agent::event::AgentEvent;
-use crate::agent::executor::{Executor, TODO_NAG_AFTER_TURNS};
+use crate::agent::executor::Executor;
 use crate::agent::ConversationMemory;
 use crate::llm::ToolDefinition;
 
@@ -62,11 +62,17 @@ impl Executor {
         let requested_focus = self.compact_request.lock().unwrap().take();
 
         // Micro pass: replace old large tool results with placeholders.
-        micro_compact(memory.messages_mut(), self.provider.as_ref());
+        let compaction_cfg = self.tuning.as_ref().map(|t| t.compaction.clone()).unwrap_or_default();
+        micro_compact(memory.messages_mut(), self.provider.as_ref(), &compaction_cfg);
 
         // Compare the approximate token count directly (estimating the
         // digit-string of the count would never exceed the threshold).
-        let over_budget = memory.approximate_tokens() > AUTO_COMPACT_THRESHOLD;
+        let threshold = self
+            .tuning
+            .as_ref()
+            .map(|t| t.compaction.auto_threshold)
+            .unwrap_or(AUTO_COMPACT_THRESHOLD);
+        let over_budget = memory.approximate_tokens() > threshold;
         if requested_focus.is_some() || over_budget {
             let workspace = std::env::current_dir().unwrap_or_default();
             let summary = auto_compact(
@@ -74,6 +80,7 @@ impl Executor {
                 self.provider.as_ref(),
                 requested_focus.as_deref(),
                 &workspace,
+                &compaction_cfg,
             )
             .await?;
             let transcript = workspace.join(".transcripts");
@@ -123,7 +130,8 @@ impl Executor {
             return;
         }
         let turns = manager.turns_since_update();
-        if turns >= TODO_NAG_AFTER_TURNS {
+        let nag_after = self.tuning.as_ref().map(|t| t.todo_nag_after_turns).unwrap_or(3);
+        if turns >= nag_after {
             self.runtime.publish(AgentEvent::TodoNag { turns_since_update: turns });
             memory.add_user("<reminder>Update your todos.</reminder>");
         }

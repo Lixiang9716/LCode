@@ -63,6 +63,7 @@ fn base_session(tmp: &TempDir) -> SessionState {
         compact_request: Arc::new(Mutex::new(None)),
         memory_store: None,
         team_bus: None,
+        tuning: None,
     }
 }
 
@@ -296,7 +297,7 @@ async fn test_approval_required_gate() {
         call_type: "function".into(),
         function: FunctionCall {
             name: "write_file".into(),
-            arguments: r#"{"path":"x.txt","content":"y"}"#.into(),
+            arguments: serde_json::json!({ "path": tmp.path().join("x.txt").display().to_string(), "content": "y" }).to_string(),
         },
     };
 
@@ -384,7 +385,7 @@ async fn test_post_tool_use_hook_runs() {
         call_type: "function".into(),
         function: FunctionCall {
             name: "write_file".into(),
-            arguments: r#"{"path":"x.txt","content":"y"}"#.into(),
+            arguments: serde_json::json!({ "path": tmp.path().join("x.txt").display().to_string(), "content": "y" }).to_string(),
         },
     };
     let mut session = base_session(&tmp);
@@ -454,13 +455,16 @@ async fn test_todo_nag_injected_after_missed_turns() {
 #[tokio::test]
 async fn test_multiple_tool_calls_in_one_response_executed_in_order() {
     let tmp = TempDir::new().unwrap();
+    // Absolute tempdir paths keep the writes out of the repo root.
+    let a_path = tmp.path().join("a.txt").display().to_string();
+    let b_path = tmp.path().join("b.txt").display().to_string();
     let calls = vec![
         ToolCallRequest {
             id: "c1".into(),
             call_type: "function".into(),
             function: FunctionCall {
                 name: "write_file".into(),
-                arguments: r#"{"path":"a.txt","content":"1"}"#.into(),
+                arguments: serde_json::json!({ "path": a_path, "content": "1" }).to_string(),
             },
         },
         ToolCallRequest {
@@ -468,7 +472,7 @@ async fn test_multiple_tool_calls_in_one_response_executed_in_order() {
             call_type: "function".into(),
             function: FunctionCall {
                 name: "write_file".into(),
-                arguments: r#"{"path":"b.txt","content":"2"}"#.into(),
+                arguments: serde_json::json!({ "path": b_path, "content": "2" }).to_string(),
             },
         },
     ];

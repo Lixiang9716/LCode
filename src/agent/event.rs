@@ -7,10 +7,11 @@
 //! Subscribers (REPL, logging, tests, future UIs) consume the event stream
 //! without coupling to the agent loop's internals.
 
+use serde::Serialize;
 use serde_json::Value;
 
 /// Events published by the agent runtime during a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum AgentEvent {
     /// A session starts with the given task description.
     SessionStarted { task: String },
@@ -18,6 +19,10 @@ pub enum AgentEvent {
     TurnStarted { turn: u32 },
     /// The model produced assistant text.
     TextGenerated { content: String },
+    /// A streaming token delta (typewriter feed). Streamed responses
+    /// publish one event per delta; the full text is the concatenation
+    /// of the deltas in arrival order.
+    TextDelta { content: String },
     /// The model requested a tool call.
     ///
     /// When `requires_approval` is true, the runtime waits for an

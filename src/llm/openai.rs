@@ -119,7 +119,11 @@ impl LlmProvider for OpenAiProvider {
         let stream = sse_stream(response).filter_map(|item| async move {
             match item {
                 Ok(SseData::Json(data)) => openai_stream_event(&data).map(Ok),
-                Ok(SseData::Done) => Some(Ok(StreamEvent::Done(FinishReason::Stop))),
+                // `data: [DONE]` only marks the end of the SSE transport;
+                // it must not emit `Done(Stop)` — that would overwrite a
+                // `finish_reason: "tool_calls"` seen in an earlier chunk
+                // and silently drop the tool call from the stream.
+                Ok(SseData::Done) => None,
                 Ok(SseData::Other(_)) => None,
                 Err(e) => Some(Err(e)),
             }

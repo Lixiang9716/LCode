@@ -63,7 +63,16 @@ async fn test_parallel_returns_all_labels_and_summaries() {
         ("three".to_string(), "third".to_string()),
     ];
 
-    let results = run_subagents_parallel(prompts, provider, empty_registry(), 30, None).await;
+    let results = run_subagents_parallel(
+        prompts,
+        provider,
+        empty_registry(),
+        30,
+        None,
+        None,
+        lcode::config::SubagentConfig::default(),
+    )
+    .await;
 
     assert_eq!(results.len(), 3);
     let labels: Vec<&str> = results.iter().map(|(l, _)| l.as_str()).collect();
@@ -104,7 +113,16 @@ async fn test_parallel_preserves_input_order() {
         ("c".to_string(), "p3".to_string()),
     ];
 
-    let results = run_subagents_parallel(prompts, provider, empty_registry(), 30, None).await;
+    let results = run_subagents_parallel(
+        prompts,
+        provider,
+        empty_registry(),
+        30,
+        None,
+        None,
+        lcode::config::SubagentConfig::default(),
+    )
+    .await;
     let expected: Vec<(String, String)> = vec![
         ("a".to_string(), "same".to_string()),
         ("b".to_string(), "same".to_string()),
@@ -146,7 +164,16 @@ async fn test_parallel_runs_subagents_concurrently() {
         ("z".to_string(), "p".to_string()),
     ];
     let start = Instant::now();
-    let results = run_subagents_parallel(prompts, provider, empty_registry(), 30, None).await;
+    let results = run_subagents_parallel(
+        prompts,
+        provider,
+        empty_registry(),
+        30,
+        None,
+        None,
+        lcode::config::SubagentConfig::default(),
+    )
+    .await;
     let elapsed = start.elapsed();
 
     assert_eq!(results.len(), 3);
@@ -177,7 +204,16 @@ async fn test_parallel_isolates_subagent_failures() {
         ("p2".to_string(), "two".to_string()),
         ("p3".to_string(), "three".to_string()),
     ];
-    let results = run_subagents_parallel(prompts, provider, empty_registry(), 30, None).await;
+    let results = run_subagents_parallel(
+        prompts,
+        provider,
+        empty_registry(),
+        30,
+        None,
+        None,
+        lcode::config::SubagentConfig::default(),
+    )
+    .await;
 
     assert_eq!(results.len(), 3);
     assert_eq!(calls.load(Ordering::SeqCst), 3, "every subagent got its turn");
@@ -200,6 +236,8 @@ async fn test_task_parallel_tool_end_to_end_via_registry() {
     registry.register(Box::new(TaskParallelTool {
         provider,
         registry: empty_registry(),
+        events: None,
+        subagent_cfg: lcode::config::SubagentConfig::default(),
         hooks: None,
     }));
 
@@ -224,6 +262,8 @@ async fn test_task_parallel_tool_empty_tasks() {
     registry.register(Box::new(TaskParallelTool {
         provider,
         registry: empty_registry(),
+        events: None,
+        subagent_cfg: lcode::config::SubagentConfig::default(),
         hooks: None,
     }));
 
@@ -237,7 +277,13 @@ fn test_task_parallel_tool_requires_runtime_context() {
     // No tokio runtime on this thread: the synchronous execute must fail
     // cleanly instead of panicking.
     let (provider, _seen) = mock_with_queue(vec![]);
-    let tool = TaskParallelTool { provider, registry: empty_registry(), hooks: None };
+    let tool = TaskParallelTool {
+        provider,
+        registry: empty_registry(),
+        hooks: None,
+        events: None,
+        subagent_cfg: lcode::config::SubagentConfig::default(),
+    };
 
     let args = serde_json::json!({ "tasks": [{ "label": "a", "prompt": "p" }] });
     let err = tool.execute(&args).unwrap_err();
@@ -247,7 +293,13 @@ fn test_task_parallel_tool_requires_runtime_context() {
 #[test]
 fn test_task_parallel_tool_requires_tasks_argument() {
     let (provider, _seen) = mock_with_queue(vec![]);
-    let tool = TaskParallelTool { provider, registry: empty_registry(), hooks: None };
+    let tool = TaskParallelTool {
+        provider,
+        registry: empty_registry(),
+        hooks: None,
+        events: None,
+        subagent_cfg: lcode::config::SubagentConfig::default(),
+    };
 
     assert!(tool.execute(&serde_json::json!({})).is_err());
     assert!(tool.execute(&serde_json::json!({ "tasks": "nope" })).is_err());
@@ -257,7 +309,13 @@ fn test_task_parallel_tool_requires_tasks_argument() {
 #[test]
 fn test_task_parallel_tool_parameters_schema() {
     let (provider, _seen) = mock_with_queue(vec![]);
-    let tool = TaskParallelTool { provider, registry: empty_registry(), hooks: None };
+    let tool = TaskParallelTool {
+        provider,
+        registry: empty_registry(),
+        hooks: None,
+        events: None,
+        subagent_cfg: lcode::config::SubagentConfig::default(),
+    };
 
     let params = tool.parameters();
     assert_eq!(params["type"], "object");
@@ -268,4 +326,45 @@ fn test_task_parallel_tool_parameters_schema() {
     assert_eq!(item["required"][1], "prompt");
     assert!(item["properties"]["label"]["type"].is_string());
     assert!(params["properties"]["max_turns"]["type"].is_string());
+}
+
+/// Each subagent publishes exactly one `SubagentCompleted` (regression:
+/// both the loop exit and the parallel wrapper used to publish, doubling
+/// the event count).
+#[tokio::test]
+async fn subagent_completed_published_once_per_subagent() {
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let mut mock = lcode::llm::provider::MockLlmProvider::new();
+    mock.expect_chat().times(0..).returning(|_, _| {
+        Ok(lcode::llm::LlmResponse {
+            content: "done".to_string(),
+            tool_calls: None,
+            usage: lcode::llm::Usage::default(),
+            finish_reason: lcode::llm::FinishReason::Stop,
+        })
+    });
+    mock.expect_name().times(0..).return_const("mock".to_string());
+    mock.expect_validate().times(0..).returning(|| Ok(()));
+
+    let prompts =
+        vec![("a".to_string(), "task a".to_string()), ("b".to_string(), "task b".to_string())];
+    let results = lcode::agent::run_subagents_parallel(
+        prompts,
+        Arc::new(mock),
+        empty_registry(),
+        5,
+        None,
+        Some(tx),
+        lcode::config::SubagentConfig::default(),
+    )
+    .await;
+    assert_eq!(results.len(), 2);
+
+    let mut completed = 0usize;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, lcode::agent::AgentEvent::SubagentCompleted { .. }) {
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 2, "one SubagentCompleted per subagent");
 }

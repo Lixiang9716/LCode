@@ -126,8 +126,8 @@ fn test_on_disk_format_is_camel_case_json() {
 fn test_tools_share_one_manager_and_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
     let manager = Arc::new(Mutex::new(manager_in(&tmp)));
-    let create = TaskCreateTool { manager: manager.clone() };
-    let update = TaskUpdateTool { manager: manager.clone() };
+    let create = TaskCreateTool { manager: manager.clone(), events: None };
+    let update = TaskUpdateTool { manager: manager.clone(), events: None };
     let list = TaskListTool { manager: manager.clone() };
 
     let result = create.execute(&serde_json::json!({"title": "Setup"})).unwrap();
@@ -166,8 +166,8 @@ fn test_tools_share_one_manager_and_round_trip() {
 fn test_tools_validate_arguments() {
     let tmp = tempfile::tempdir().unwrap();
     let manager = Arc::new(Mutex::new(manager_in(&tmp)));
-    let create = TaskCreateTool { manager: manager.clone() };
-    let update = TaskUpdateTool { manager: manager.clone() };
+    let create = TaskCreateTool { manager: manager.clone(), events: None };
+    let update = TaskUpdateTool { manager: manager.clone(), events: None };
 
     let err = create.execute(&serde_json::json!({})).expect_err("title required");
     assert!(err.to_string().contains("missing required argument 'title'"));

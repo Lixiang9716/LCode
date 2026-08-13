@@ -45,6 +45,7 @@ fn executor_with_cron(
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
                 memory_store: None,
                 team_bus: None,
+                tuning: None,
             },
         ),
         events_rx,

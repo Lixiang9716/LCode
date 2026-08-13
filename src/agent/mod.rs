@@ -40,9 +40,11 @@ mod mcp;
 mod mcp_stdio;
 mod memory;
 mod memory_store;
+mod message_bus;
 mod planner;
 mod prompt;
 mod protocol;
+mod recorder;
 mod render;
 mod retry;
 mod runtime;
@@ -57,11 +59,12 @@ mod todo;
 mod worktree;
 
 pub use background::{
-    BackgroundCheckTool, BackgroundManager, BackgroundRunTool, BackgroundStatus, BackgroundTask,
+    register as register_background_tools, BackgroundCheckTool, BackgroundManager,
+    BackgroundRunTool, BackgroundStatus, BackgroundTask,
 };
 pub use compaction::{
-    auto_compact, estimate_tokens, micro_compact, CompactTool, AUTO_COMPACT_THRESHOLD, KEEP_RECENT,
-    PRESERVE_RESULT_TOOLS,
+    auto_compact, estimate_tokens, micro_compact, register as register_compact_tool, CompactTool,
+    AUTO_COMPACT_THRESHOLD, KEEP_RECENT, PRESERVE_RESULT_TOOLS,
 };
 pub use cron::{CancelCronTool, CronJob, CronScheduler, ListCronsTool, ScheduleCronTool};
 pub use event::{AgentCommand, AgentEvent};
@@ -84,14 +87,21 @@ pub use protocol::{
     ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
     ReviewPlanTool, SubmitPlanTool,
 };
+pub use recorder::spawn_event_recorder;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
 pub use runtime::{AgentRuntime, ApprovalDecision};
 pub use session::{snapshot, SessionSnapshot, SessionStore};
-pub use skill::{with_layer1, LoadSkillTool, Skill, SkillRegistry};
-pub use subagent::{run_subagent, run_subagents_parallel, TaskParallelTool, TaskTool};
+pub use skill::{
+    register as register_skill_tools, with_layer1, LoadSkillTool, Skill, SkillRegistry,
+};
+pub use subagent::{
+    register as register_subagent_tools, run_subagent, run_subagents_parallel, TaskParallelTool,
+    TaskTool,
+};
 pub use task::{
-    Task, TaskClaimTool, TaskCreateTool, TaskListTool, TaskManager, TaskStatus, TaskUpdateTool,
+    register as register_task_tools, Task, TaskClaimTool, TaskCreateTool, TaskListTool,
+    TaskManager, TaskStatus, TaskUpdateTool,
 };
 pub use team::{
     register as register_team_tools, MessageBus, TeamMessage, TeamTool, TeamToolKind, Teammate,
@@ -100,7 +110,9 @@ pub use team::{
 pub use teammate::{
     handle_teammate_message, reinject_identity, run_teammate_loop, TeammateEnv, TeammateTools,
 };
-pub use todo::{TodoItem, TodoManager, TodoStatus, TodoUpdateTool};
+pub use todo::{
+    register as register_todo_tools, TodoItem, TodoManager, TodoStatus, TodoUpdateTool,
+};
 pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManager};
 
 /// Run a single-shot agent task.
@@ -143,26 +155,33 @@ fn build_session(
     register_default_hooks(&mut hooks_registry);
     let hooks = Arc::new(hooks_registry);
 
-    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+    let (runtime, events_rx, commands_tx) =
+        AgentRuntime::with_capacity(config.events.channel_capacity, config.events.command_capacity);
 
     let workspace = std::env::current_dir()?;
-    let todo = Arc::new(Mutex::new(TodoManager::default()));
-    todo::register(&mut registry, todo.clone());
+    let todo = Arc::new(Mutex::new(TodoManager::with_max_items(config.todo.max_items)));
+    todo::register(&mut registry, todo.clone(), Some(runtime.events_sender()));
 
     let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
-    skill::register(&mut registry, skills_dir.clone());
+    skill::register(&mut registry, skills_dir.clone(), Some(runtime.events_sender()));
 
     let compact_request = Arc::new(Mutex::new(None));
     compaction::register(&mut registry, compact_request.clone());
 
     let background = Arc::new(BackgroundManager::new(config)?.with_events(runtime.events_sender()));
     background::register(&mut registry, background.clone());
-    task::register(&mut registry, &workspace);
+    task::register(&mut registry, &workspace, Some(runtime.events_sender()));
 
     // INTEGRATION POINT: teammate replies land in
     // `{workspace}/.team/inbox/lead.jsonl`; the executor's turn-start
     // should drain it via `MessageBus::drain_lead_inbox`.
-    team::register(&mut registry, &workspace, provider.clone(), Some(runtime.events_sender()));
+    team::register(
+        &mut registry,
+        &workspace,
+        provider.clone(),
+        Some(runtime.events_sender()),
+        &config.team,
+    );
     worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
 
     let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
@@ -170,7 +189,8 @@ fn build_session(
     let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
     mcp::register(&mut registry, mcp_registry.clone());
     let _ = memory_store::register(&mut registry, &workspace, provider.clone());
-    let memory_store = Arc::new(crate::agent::MemoryStore::new(&workspace)?);
+    let memory_store =
+        Arc::new(crate::agent::MemoryStore::with_config(&workspace, &config.memory)?);
     let team_bus = Arc::new(crate::agent::MessageBus::new(&workspace));
 
     Ok((
@@ -241,6 +261,8 @@ pub async fn run_task_with_memory(
         Arc::from(build_provider(config)?),
         subagent_registry,
         Some(hooks.clone()),
+        Some(runtime.events_sender()),
+        config.subagent.clone(),
     );
 
     // Run the session: renderer + memory assembly + executor loop.
@@ -291,6 +313,12 @@ async fn execute_session(
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
 ) -> anyhow::Result<()> {
+    // Audit trail: every event (turns, tool calls, subagents, background
+    // tasks, team messages, ...) lands in `.transcripts/events_{ts}.jsonl`
+    // with a timestamp, in arrival order. Fire-and-forget; the task ends
+    // when the event bus closes. Subscribed before the renderer takes
+    // `events_rx`, so no event published after this point is missed.
+    let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
     // G9 (s07): skill layer-1 descriptions join the base system prompt;
@@ -314,13 +342,25 @@ async fn execute_session(
         mcp: mcp_registry,
         compact_request,
         memory_store: Some(memory_store),
-        team_bus: Some(team_bus),
+        team_bus: Some(team_bus.clone()),
+        tuning: Some(Arc::new(crate::config::RuntimeTuning::from_config(config))),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
     executor.run(task, &planner, memory, max_turns, stream).await?;
 
+    // The executor owns the event-bus sender (via its runtime). Drop it
+    // before awaiting the renderer, or the renderer never observes the
+    // channel close and the process hangs after the task completes.
+    drop(executor);
+
+    // Teammate loops hold the team event bus; without a shutdown signal
+    // they keep working after the session ends and the renderer never
+    // observes the channel close (the process hangs for minutes).
+    team_bus.shutdown();
+
     let _ = renderer.await;
+    let _ = recorder.await;
     Ok(())
 }
 
@@ -366,11 +406,12 @@ pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
         ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
         ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
     };
-    let retry = RetryProvider::with_fallback(
-        inner,
-        RetryPolicy::default(),
-        config.llm.fallback_model.clone(),
-    );
+    let policy = RetryPolicy {
+        max_attempts: config.retry.max_attempts,
+        base_delay_ms: config.retry.base_delay_ms,
+        max_delay_ms: config.retry.max_delay_ms,
+    };
+    let retry = RetryProvider::with_fallback(inner, policy, config.llm.fallback_model.clone());
     // Seed the retry budget (and thus the inner provider's request body)
     // with the configured max_tokens instead of the hardcoded default.
     retry.set_max_tokens(config.llm.max_tokens);

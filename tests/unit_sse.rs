@@ -188,8 +188,12 @@ fn anthropic_message_delta_maps_stop_reason() {
 
 #[test]
 fn anthropic_message_stop_ends_stream() {
+    // `message_stop` is an end-of-stream sentinel, not a finish reason:
+    // it emits nothing. The reason comes from `message_delta.stop_reason`
+    // alone — a `Done(Stop)` here would overwrite a `tool_use` stop and
+    // silently drop streamed tool calls.
     let event = serde_json::json!({ "type": "message_stop" });
-    assert_eq!(anthropic_stream_event(&event), Some(StreamEvent::Done(FinishReason::Stop)));
+    assert_eq!(anthropic_stream_event(&event), None);
 }
 
 #[test]
@@ -235,4 +239,40 @@ async fn retry_provider_forwards_chat_stream() {
             StreamEvent::Done(FinishReason::Stop),
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Provider stream-event mapping (sentinel semantics)
+// ---------------------------------------------------------------------------
+
+/// `message_stop` is an end-of-stream sentinel: it must emit nothing, or
+/// its `Done(Stop)` would overwrite a `tool_use` stop seen in the final
+/// `message_delta` and silently drop the tool call (E2E regression:
+/// streamed tool-call responses collapsed into empty "successful" turns).
+#[test]
+fn anthropic_message_stop_emits_no_event() {
+    let stop = serde_json::json!({ "type": "message_stop" });
+    assert_eq!(anthropic_stream_event(&stop), None);
+
+    // The real finish reason comes exclusively from message_delta.
+    let tool_use = serde_json::json!({
+        "type": "message_delta",
+        "delta": { "stop_reason": "tool_use" }
+    });
+    assert_eq!(anthropic_stream_event(&tool_use), Some(StreamEvent::Done(FinishReason::ToolCalls)));
+}
+
+/// The OpenAI `finish_reason` chunk maps to `Done`, and remains the only
+/// source of the finish reason (the `[DONE]` sentinel is handled in the
+/// provider's stream loop, which now skips it).
+#[test]
+fn openai_finish_reason_chunk_maps_to_done() {
+    let tool_calls = serde_json::json!({
+        "choices": [{ "delta": {}, "finish_reason": "tool_calls" }]
+    });
+    assert_eq!(openai_stream_event(&tool_calls), Some(StreamEvent::Done(FinishReason::ToolCalls)));
+    let stop = serde_json::json!({
+        "choices": [{ "delta": {}, "finish_reason": "stop" }]
+    });
+    assert_eq!(openai_stream_event(&stop), Some(StreamEvent::Done(FinishReason::Stop)));
 }

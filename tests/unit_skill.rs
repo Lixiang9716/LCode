@@ -146,7 +146,8 @@ fn test_content_unknown_skill_with_empty_registry() {
 
 #[test]
 fn test_load_skill_tool_metadata_and_parameters() {
-    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())) };
+    let tool =
+        LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())), events: None };
 
     assert_eq!(tool.name(), "load_skill");
     assert!(tool.description().contains("skill"));
@@ -161,7 +162,7 @@ fn test_load_skill_tool_metadata_and_parameters() {
 fn test_load_skill_tool_executes() {
     let tmp = TempDir::new().unwrap();
     write_skill(tmp.path(), "pdf", "Process PDF files", "Step 1: parse.");
-    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(load(tmp.path()))) };
+    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(load(tmp.path()))), events: None };
 
     let result = tool.execute(&serde_json::json!({ "name": "pdf" })).unwrap();
     assert!(result.success);
@@ -172,7 +173,7 @@ fn test_load_skill_tool_executes() {
 fn test_load_skill_tool_unknown_skill_returns_error_text() {
     let tmp = TempDir::new().unwrap();
     write_skill(tmp.path(), "pdf", "d", "body");
-    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(load(tmp.path()))) };
+    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(load(tmp.path()))), events: None };
 
     let result = tool.execute(&serde_json::json!({ "name": "nope" })).unwrap();
     assert!(result.output.contains("Error: Unknown skill 'nope'"));
@@ -181,7 +182,8 @@ fn test_load_skill_tool_unknown_skill_returns_error_text() {
 
 #[test]
 fn test_load_skill_tool_with_empty_registry_says_no_skills_loaded() {
-    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())) };
+    let tool =
+        LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())), events: None };
 
     let result = tool.execute(&serde_json::json!({ "name": "pdf" })).unwrap();
     assert!(result.success);
@@ -190,7 +192,8 @@ fn test_load_skill_tool_with_empty_registry_says_no_skills_loaded() {
 
 #[test]
 fn test_load_skill_tool_requires_name_argument() {
-    let tool = LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())) };
+    let tool =
+        LoadSkillTool { registry: Arc::new(Mutex::new(SkillRegistry::default())), events: None };
 
     let result = tool.execute(&serde_json::json!({})).unwrap();
     assert!(!result.success);

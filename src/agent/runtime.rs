@@ -27,8 +27,16 @@ impl AgentRuntime {
     /// Create a new runtime along with an event subscription and the
     /// command sender for the controller.
     pub fn new() -> (Self, broadcast::Receiver<AgentEvent>, mpsc::Sender<AgentCommand>) {
-        let (events_tx, events_rx) = broadcast::channel(256);
-        let (commands_tx, commands_rx) = mpsc::channel(64);
+        Self::with_capacity(256, 64)
+    }
+
+    /// Create a runtime with user-tunable channel capacities.
+    pub fn with_capacity(
+        events_capacity: usize,
+        commands_capacity: usize,
+    ) -> (Self, broadcast::Receiver<AgentEvent>, mpsc::Sender<AgentCommand>) {
+        let (events_tx, events_rx) = broadcast::channel(events_capacity);
+        let (commands_tx, commands_rx) = mpsc::channel(commands_capacity);
         (Self { events_tx, commands_rx }, events_rx, commands_tx)
     }
 

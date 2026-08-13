@@ -262,6 +262,8 @@ fn opt_ids(args: &serde_json::Value, key: &str) -> anyhow::Result<Vec<u32>> {
 /// Tool: `task_create`.
 pub struct TaskCreateTool {
     pub manager: Arc<Mutex<TaskManager>>,
+    /// Session event bus; publishes `TaskCreated` after creation.
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for TaskCreateTool {
@@ -293,7 +295,14 @@ impl Tool for TaskCreateTool {
         let blocked_by = opt_ids(args, "blocked_by")?;
         let mut manager = self.manager.lock().unwrap();
         match manager.create(title, blocked_by) {
-            Ok(task) => Ok(ToolResult::ok(render_task(&task))),
+            Ok(task) => {
+                let event = crate::agent::AgentEvent::TaskCreated {
+                    id: task.id,
+                    title: task.title.clone(),
+                };
+                publish(&self.events, event);
+                Ok(ToolResult::ok(render_task(&task)))
+            }
             Err(e) => Ok(ToolResult::err(e.to_string())),
         }
     }
@@ -302,6 +311,8 @@ impl Tool for TaskCreateTool {
 /// Tool: `task_update`.
 pub struct TaskUpdateTool {
     pub manager: Arc<Mutex<TaskManager>>,
+    /// Session event bus; publishes `TaskUpdated` after updates.
+    pub events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
 }
 
 impl Tool for TaskUpdateTool {
@@ -368,8 +379,16 @@ impl Tool for TaskUpdateTool {
             blocked_by.retain(|blocked| !remove.contains(blocked));
         }
         let blocked_by = if add.is_empty() && remove.is_empty() { None } else { Some(blocked_by) };
-        match manager.update(id, status.unwrap_or(current.status), blocked_by) {
-            Ok(task) => Ok(ToolResult::ok(render_task(&task))),
+        let updated = manager.update(id, status.unwrap_or(current.status), blocked_by);
+        match updated {
+            Ok(task) => {
+                let event = crate::agent::AgentEvent::TaskUpdated {
+                    id: task.id,
+                    status: task.status.as_str().to_string(),
+                };
+                publish(&self.events, event);
+                Ok(ToolResult::ok(render_task(&task)))
+            }
             Err(e) => Ok(ToolResult::err(e.to_string())),
         }
     }
@@ -437,12 +456,28 @@ impl Tool for TaskClaimTool {
     }
 }
 
+/// Send `event` on the tool's session bus when one is attached.
+fn publish(
+    events: &Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
+    event: crate::agent::AgentEvent,
+) {
+    if let Some(tx) = events {
+        let _ = tx.send(event);
+    }
+}
+
 /// Register this module's tools with the registry. All four tools share
 /// a single [`TaskManager`] so the board stays consistent across tools.
-pub fn register(registry: &mut crate::tools::ToolRegistry, workspace: &Path) {
+pub fn register(
+    registry: &mut crate::tools::ToolRegistry,
+    workspace: &Path,
+    events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
+) {
     let manager = Arc::new(Mutex::new(TaskManager::new(workspace)));
-    registry.register(Box::new(TaskCreateTool { manager: manager.clone() }));
-    registry.register(Box::new(TaskUpdateTool { manager: manager.clone() }));
+    registry
+        .register(Box::new(TaskCreateTool { manager: manager.clone(), events: events.clone() }));
+    registry
+        .register(Box::new(TaskUpdateTool { manager: manager.clone(), events: events.clone() }));
     registry.register(Box::new(TaskListTool { manager: manager.clone() }));
     registry.register(Box::new(TaskClaimTool { manager }));
 }

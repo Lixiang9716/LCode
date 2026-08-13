@@ -377,3 +377,55 @@ fn handle_command_set_persists_to_disk() {
     let content = std::fs::read_to_string(global_config_path().unwrap()).unwrap();
     assert!(content.contains("provider = \"openai\""), "content: {content}");
 }
+
+/// Tuning sections parse from TOML and the env override keys map onto
+/// the right fields (every hardcoded value must be user-tunable).
+#[test]
+#[serial]
+fn test_tuning_sections_parse_from_toml_and_env() {
+    let toml = r#"
+[compaction]
+auto_threshold = 12345
+[team]
+idle_interval_secs = 2
+[subagent]
+max_turns = 7
+[memory]
+max_relevant = 3
+[background]
+default_timeout_secs = 42
+[retry]
+max_attempts = 2
+[events]
+channel_capacity = 99
+[todo]
+max_items = 4
+[agent]
+todo_nag_after_turns = 1
+"#;
+    let cfg: Config = toml::from_str(toml).expect("toml parses");
+    assert_eq!(cfg.compaction.auto_threshold, 12345);
+    assert_eq!(cfg.team.idle_interval_secs, 2);
+    assert_eq!(cfg.subagent.max_turns, 7);
+    assert_eq!(cfg.memory.max_relevant, 3);
+    assert_eq!(cfg.background.default_timeout_secs, 42);
+    assert_eq!(cfg.retry.max_attempts, 2);
+    assert_eq!(cfg.events.channel_capacity, 99);
+    assert_eq!(cfg.todo.max_items, 4);
+    assert_eq!(cfg.agent.todo_nag_after_turns, 1);
+    // Untouched sections keep their defaults.
+    assert_eq!(cfg.team.work_turns, 50);
+    assert_eq!(cfg.retry.base_delay_ms, 500);
+
+    let mut cfg = Config::default();
+    std::env::set_var("LCODE_TEAM_IDLE_INTERVAL_SECS", "9");
+    std::env::set_var("LCODE_TODO_MAX_ITEMS", "11");
+    std::env::set_var("LCODE_COMPACTION_AUTO_THRESHOLD", "777");
+    apply_env_overrides(&mut cfg);
+    assert_eq!(cfg.team.idle_interval_secs, 9);
+    assert_eq!(cfg.todo.max_items, 11);
+    assert_eq!(cfg.compaction.auto_threshold, 777);
+    std::env::remove_var("LCODE_TEAM_IDLE_INTERVAL_SECS");
+    std::env::remove_var("LCODE_TODO_MAX_ITEMS");
+    std::env::remove_var("LCODE_COMPACTION_AUTO_THRESHOLD");
+}

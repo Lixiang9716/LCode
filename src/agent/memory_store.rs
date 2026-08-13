@@ -39,8 +39,6 @@ const MEMORY_INDEX: &str = "MEMORY.md";
 pub const CONSOLIDATE_THRESHOLD: usize = 10;
 /// Maximum memories injected per relevance query.
 const MAX_RELEVANT: usize = 5;
-/// Dialogue excerpt size fed to the extraction model.
-const MAX_EXTRACT_CHARS: usize = 4000;
 /// Catalog size fed to the consolidation model.
 const MAX_CONSOLIDATE_CHARS: usize = 16_000;
 /// Query size fed to the relevance model.
@@ -63,15 +61,31 @@ pub struct MemoryFile {
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     dir: PathBuf,
+    consolidate_threshold: usize,
+    max_relevant: usize,
+    max_extract_chars: usize,
 }
 
 impl MemoryStore {
     /// Create a store rooted at `workspace/.memory/`, creating the
-    /// directory when missing.
+    /// directory when missing. Tuning values come from the defaults.
     pub fn new(workspace: &Path) -> anyhow::Result<Self> {
+        Self::with_config(workspace, &crate::config::MemoryConfig::default())
+    }
+
+    /// Create a store with user-tunable thresholds from `config`.
+    pub fn with_config(
+        workspace: &Path,
+        config: &crate::config::MemoryConfig,
+    ) -> anyhow::Result<Self> {
         let dir = workspace.join(MEMORY_DIR);
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            consolidate_threshold: config.consolidate_threshold,
+            max_relevant: config.max_relevant,
+            max_extract_chars: config.max_extract_chars,
+        })
     }
 
     /// The `.memory/` directory backing this store.
@@ -183,7 +197,7 @@ impl MemoryStore {
              Existing memories:\n{}\n\n\
              Dialogue:\n{}",
             self.existing_catalog(),
-            truncate(dialogue, MAX_EXTRACT_CHARS)
+            truncate(dialogue, self.max_extract_chars)
         );
         let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
         Ok(self.write_items(&extract_json_array(&response.content)).len())
@@ -199,7 +213,7 @@ impl MemoryStore {
         provider: &dyn crate::llm::LlmProvider,
     ) -> anyhow::Result<usize> {
         let files = self.list();
-        if files.len() < CONSOLIDATE_THRESHOLD {
+        if files.len() < self.consolidate_threshold {
             return Ok(files.len());
         }
         let catalog = files
@@ -281,7 +295,7 @@ impl MemoryStore {
         let keywords: Vec<String> =
             query.split_whitespace().map(|w| w.to_lowercase()).filter(|w| w.len() > 3).collect();
         for f in &files {
-            if selected.len() >= MAX_RELEVANT {
+            if selected.len() >= self.max_relevant {
                 break;
             }
             let haystack = format!("{} {}", f.name, f.description).to_lowercase();
