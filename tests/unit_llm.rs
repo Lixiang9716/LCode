@@ -390,3 +390,31 @@ fn test_anthropic_message_to_json_assistant_tool_calls() {
     assert_eq!(json["content"][1]["name"], "read_file");
     assert_eq!(json["content"][1]["input"]["path"], "a.rs");
 }
+
+/// Cost estimation: cache hits bill at the discounted tier, and the
+/// legacy model names resolve to the flash pricing like the provider's
+/// alias mapping.
+#[test]
+fn test_usage_cost_estimation() {
+    use lcode::llm::{estimate_cost, pricing_for, Pricing, Usage};
+
+    assert_eq!(pricing_for("deepseek-v4-flash"), Pricing::FLASH);
+    assert_eq!(pricing_for("deepseek-v4-pro"), Pricing::PRO);
+    assert_eq!(pricing_for("deepseek-chat"), Pricing::FLASH, "legacy alias → flash");
+    assert_eq!(pricing_for("deepseek-reasoner"), Pricing::FLASH);
+
+    let usage = Usage {
+        prompt_tokens: 1_000_000,
+        completion_tokens: 500_000,
+        total_tokens: 1_500_000,
+        cache_hit_tokens: 800_000,
+        cache_miss_tokens: 200_000,
+        reasoning_tokens: 0,
+    };
+    // flash: 0.8M*0.0028 + 0.2M*0.14 + 0.5M*0.28 per-1M
+    let expected = 0.8 * 0.0028 + 0.2 * 0.14 + 0.5 * 0.28;
+    assert!((estimate_cost("deepseek-v4-flash", &usage) - expected).abs() < 1e-9);
+
+    let pro_expected = 0.8 * 0.003625 + 0.2 * 0.435 + 0.5 * 0.87;
+    assert!((estimate_cost("deepseek-v4-pro", &usage) - pro_expected).abs() < 1e-9);
+}
