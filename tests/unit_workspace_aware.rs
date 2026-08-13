@@ -58,7 +58,10 @@ fn session(tuning: Arc<RuntimeTuning>) -> lcode::agent::SessionState {
     }
 }
 
-async fn run_in(dir: &std::path::Path, workspace_aware: bool) -> ConversationMemory {
+async fn run_in(
+    dir: &std::path::Path,
+    workspace_aware: bool,
+) -> (ConversationMemory, Vec<lcode::agent::AgentEvent>) {
     let mut mock = lcode::llm::provider::MockLlmProvider::new();
     mock.expect_chat().times(1).returning(|_, _| {
         Ok(LlmResponse {
@@ -72,7 +75,7 @@ async fn run_in(dir: &std::path::Path, workspace_aware: bool) -> ConversationMem
     mock.expect_name().times(0..).return_const("mock".to_string());
     mock.expect_validate().times(0..).returning(|| Ok(()));
 
-    let (runtime, _events, _commands) = AgentRuntime::new();
+    let (runtime, mut events_rx, _commands) = AgentRuntime::new();
     let mut executor = lcode::agent::Executor::new(
         Box::new(mock),
         ToolRegistry::new(&Config::default()).unwrap(),
@@ -81,16 +84,30 @@ async fn run_in(dir: &std::path::Path, workspace_aware: bool) -> ConversationMem
         session(tuning(workspace_aware)),
     );
     let _guard = std::env::set_current_dir(dir);
-    executor
+    let memory = executor
         .run("task", &Planner::new(10), ConversationMemory::new("sys".to_string()), 10, false)
         .await
-        .expect("run completes")
+        .expect("run completes");
+    let events: Vec<lcode::agent::AgentEvent> = {
+        let mut collected = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            collected.push(event);
+        }
+        collected
+    };
+    (memory, events)
 }
 
 #[tokio::test]
 async fn workspace_context_injected_when_enabled() {
     let dir = repo_with_changes();
-    let memory = run_in(dir.path(), true).await;
+    let (memory, events) = run_in(dir.path(), true).await;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, lcode::agent::AgentEvent::WorkspaceContext { branch } if branch == "main")),
+        "audit event published with the branch"
+    );
 
     let blocks: Vec<&str> = memory
         .messages()
@@ -108,14 +125,14 @@ async fn workspace_context_injected_when_enabled() {
 #[tokio::test]
 async fn workspace_context_skipped_when_disabled() {
     let dir = repo_with_changes();
-    let memory = run_in(dir.path(), false).await;
+    let (memory, _) = run_in(dir.path(), false).await;
     assert!(!memory.messages().iter().any(|m| m.content.contains("<workspace-context>")));
 }
 
 #[tokio::test]
 async fn workspace_context_skipped_outside_git_repo() {
     let dir = tempfile::TempDir::new().unwrap();
-    let memory = run_in(dir.path(), true).await;
+    let (memory, _) = run_in(dir.path(), true).await;
     assert!(!memory.messages().iter().any(|m| m.content.contains("<workspace-context>")));
 }
 
@@ -134,7 +151,7 @@ fn workspace_context_caps_long_output() {
         std::fs::write(dir.path().join(format!("f{i:03}.txt")), "x\n").unwrap();
     }
     let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    let memory = rt.block_on(run_in(dir.path(), true));
+    let (memory, _) = rt.block_on(run_in(dir.path(), true));
     let block = memory
         .messages()
         .iter()

@@ -21,7 +21,18 @@ pub(crate) fn inject_workspace_context(executor: &Executor, memory: &mut Convers
     let Some(block) = workspace_context() else {
         return;
     };
+    // User messages are not persisted by the recorder, so the audit
+    // trail gets an explicit event for the injected context.
+    executor.runtime.publish(crate::agent::AgentEvent::WorkspaceContext {
+        branch: branch_of(&block).unwrap_or_default(),
+    });
     memory.add_user(block);
+}
+
+/// Extract the branch name from a rendered context block.
+fn branch_of(block: &str) -> Option<String> {
+    let line = block.lines().find(|l| l.starts_with("git branch: "))?;
+    Some(line.trim_start_matches("git branch: ").to_string())
 }
 
 /// Build the workspace-context block, or `None` when unavailable.
