@@ -7,10 +7,8 @@
 //! inbox and the task board; auto-claim the first unclaimed task; after a
 //! 60s timeout send a summary to the lead and shut down. Identity is
 //! re-injected when the message list shrank (context compression, s17).
-//!
-//! The loop runs as a tokio task (dropped automatically when the runtime
-//! drops, mirroring s15's daemon threads). When no LLM provider is
-//! configured the loop falls back to the basic echo loop (no LLM).
+//! The loop runs as a tokio task; with no LLM provider configured it
+//! falls back to the basic echo loop.
 
 use crate::agent::protocol::{dispatch_message, DispatchAction, ProtocolManager};
 use crate::agent::task::{Task, TaskClaimTool, TaskListTool, TaskManager};
@@ -183,6 +181,7 @@ fn teammate_tool(
             description: description.to_string(),
             parameters,
         },
+        server: None,
     }
 }
 
@@ -338,6 +337,7 @@ async fn teammate_llm_turn(
         content: response.content.clone(),
         tool_call_id: None,
         tool_calls: response.tool_calls.clone(),
+        prefix: None,
     });
     let Some(calls) = response.tool_calls else {
         return (false, usage); // stop_reason != tool_use -> IDLE

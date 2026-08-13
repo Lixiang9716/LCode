@@ -133,7 +133,7 @@ fn anthropic_serialization_merges_parallel_tool_results() {
         ChatMessage::tool("result-2".to_string(), "call-2".to_string()),
     ];
     let refs: Vec<&ChatMessage> = messages.iter().collect();
-    let json = anthropic_messages_to_json(&refs);
+    let json = anthropic_messages_to_json(&refs, false);
 
     // user(task) + assistant(tool_use x2) + ONE merged user message.
     assert_eq!(json.len(), 3, "tool results merge into one user message: {json:?}");
@@ -171,7 +171,7 @@ fn anthropic_serialization_keeps_single_tool_result_shape() {
         ChatMessage::tool("one".to_string(), "call-1".to_string()),
     ];
     let refs: Vec<&ChatMessage> = messages.iter().collect();
-    let json = anthropic_messages_to_json(&refs);
+    let json = anthropic_messages_to_json(&refs, false);
     assert_eq!(json.len(), 3);
     assert_eq!(json[2]["content"][0]["tool_use_id"], "call-1");
     assert_eq!(json[2]["content"][0]["content"], "one");

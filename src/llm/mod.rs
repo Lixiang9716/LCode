@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod anthropic;
+pub mod anthropic_parse;
 pub mod openai;
 pub mod provider;
 pub mod sse;
@@ -48,6 +49,13 @@ pub struct ChatMessage {
     /// Tool calls requested by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// Prefix-completion marker (DeepSeek beta): an assistant message
+    /// carrying `Some(true)` asks the API to continue generating from
+    /// exactly this content instead of starting a fresh reply. Only the
+    /// OpenAI-format provider honours it; the Anthropic-format provider
+    /// rejects such requests with a clear error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<bool>,
 }
 
 /// A tool call requested by the model.
@@ -72,6 +80,38 @@ pub struct ToolDefinition {
     #[serde(rename = "type")]
     pub tool_type: String,
     pub function: FunctionDefinition,
+    /// Server-side tool spec (e.g. DeepSeek's `web_search`). When set,
+    /// the Anthropic-format provider serializes this entry as a server
+    /// tool (`{"type": ..., "name": ..., "max_queries": ...}`) and the
+    /// API executes it itself, returning the result in-band; the
+    /// OpenAI-format provider skips it (chat completions has no server
+    /// tools).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerToolSpec>,
+}
+
+/// Declaration of a server-side tool (executed by the API, not locally).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolSpec {
+    /// Wire type of the server tool, e.g. `web_search_20260209` on
+    /// DeepSeek's Anthropic-compatible endpoint.
+    pub tool_type: String,
+    /// Local name the model calls it by (e.g. `web_search`).
+    pub name: String,
+    /// Optional query budget for search-style server tools.
+    pub max_queries: Option<u32>,
+}
+
+/// A server-side tool result carried back by the API (already executed:
+/// there is nothing for the client to run, only to record).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerToolResult {
+    /// ID linking the result to the server tool call block.
+    pub id: String,
+    /// Tool name (e.g. `web_search`).
+    pub name: String,
+    /// Flattened result text to feed back into the conversation.
+    pub content: String,
 }
 
 /// Function definition schema in a tool definition.
@@ -89,6 +129,9 @@ pub struct LlmResponse {
     pub content: String,
     /// Any tool calls requested
     pub tool_calls: Option<Vec<ToolCallRequest>>,
+    /// Server-side tool results (web search etc.): already executed by
+    /// the API; the caller records them like local tool results.
+    pub server_results: Vec<ServerToolResult>,
     /// Token usage stats
     pub usage: Usage,
     /// Finish reason
@@ -125,11 +168,23 @@ pub enum FinishReason {
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: Role::System, content: content.into(), tool_call_id: None, tool_calls: None }
+        Self {
+            role: Role::System,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: None,
+            prefix: None,
+        }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into(), tool_call_id: None, tool_calls: None }
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: None,
+            prefix: None,
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -138,6 +193,20 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: None,
+            prefix: None,
+        }
+    }
+
+    /// Assistant message carrying the DeepSeek beta prefix-completion
+    /// marker: the API continues generating from `content` instead of
+    /// starting a fresh reply.
+    pub fn assistant_prefix(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls: None,
+            prefix: Some(true),
         }
     }
 
@@ -147,6 +216,12 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: Some(tool_call_id),
             tool_calls: None,
+            prefix: None,
         }
     }
+}
+
+/// Does the request carry a prefix-completion marker message?
+pub fn has_prefix(messages: &[ChatMessage]) -> bool {
+    messages.iter().any(|m| m.prefix == Some(true))
 }

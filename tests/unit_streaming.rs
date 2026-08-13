@@ -68,6 +68,8 @@ fn streaming_executor() -> (Executor, tokio::sync::broadcast::Receiver<AgentEven
                 memory_store: None,
                 team_bus: None,
                 tuning: None,
+                internal_provider: None,
+                web_search: None,
             },
         ),
         events_rx,
@@ -114,6 +116,7 @@ async fn test_non_streaming_run_does_not_call_chat_stream() {
         Ok(lcode::llm::LlmResponse {
             content: "Plain answer.".to_string(),
             tool_calls: None,
+            server_results: Vec::new(),
             usage: lcode::llm::Usage::default(),
             finish_reason: FinishReason::Stop,
         })
@@ -140,6 +143,8 @@ async fn test_non_streaming_run_does_not_call_chat_stream() {
             memory_store: None,
             team_bus: None,
             tuning: None,
+            internal_provider: None,
+            web_search: None,
         },
     );
 
@@ -188,6 +193,7 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
     mock.expect_chat().times(1).returning(|_messages, _tools| {
         Ok(lcode::llm::LlmResponse {
             content: String::new(),
+            server_results: Vec::new(),
             tool_calls: Some(vec![lcode::llm::ToolCallRequest {
                 id: "call-1".to_string(),
                 call_type: "function".to_string(),
@@ -221,6 +227,8 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
             memory_store: None,
             team_bus: None,
             tuning: None,
+            internal_provider: None,
+            web_search: None,
         },
     );
 

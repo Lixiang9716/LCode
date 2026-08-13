@@ -14,8 +14,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
-// Helpers
-
 fn response(
     content: &str,
     finish: FinishReason,
@@ -24,6 +22,7 @@ fn response(
     LlmResponse {
         content: content.to_string(),
         tool_calls,
+        server_results: Vec::new(),
         usage: Usage::default(),
         finish_reason: finish,
     }
@@ -64,6 +63,8 @@ fn base_session(tmp: &TempDir) -> SessionState {
         memory_store: None,
         team_bus: None,
         tuning: None,
+        internal_provider: None,
+        web_search: None,
     }
 }
 
@@ -252,9 +253,7 @@ async fn test_background_notification_injected_before_next_llm() {
     let tmp = TempDir::new().unwrap();
     let bg = Arc::new(BackgroundManager::default());
     let _ = bg.spawn("echo hi", 30);
-    // Wait for the fast background task to finish (echo) without draining
-    // the notification queue — the executor must drain it. Async sleep
-    // yields to the current-thread runtime so the task can complete.
+    // Wait for the echo task; the executor must drain the notification.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let mut session = base_session(&tmp);

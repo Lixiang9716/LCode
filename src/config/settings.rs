@@ -91,6 +91,35 @@ pub struct LlmConfig {
     /// tokens (~79 fewer) and making responses faster and more direct.
     #[serde(default)]
     pub thinking_disabled: bool,
+
+    /// Reasoning effort for DeepSeek v4's thinking mode (`low` / `high` /
+    /// `max`; `high` is the default tier). `low` saves ~65% of the
+    /// hidden reasoning tokens and ~50% of the latency with no measured
+    /// accuracy loss. Ignored when `thinking_disabled` is set. On the
+    /// OpenAI-format endpoint this maps to the top-level
+    /// `reasoning_effort` parameter; on DeepSeek's Anthropic-compatible
+    /// endpoint it maps to a `reasoning: {type: "enabled", effort}` block
+    /// (not sent to the native Anthropic endpoint, which has no such
+    /// field).
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+
+    /// Force thinking mode off for internal utility calls (context
+    /// compaction summaries, memory extraction/consolidation) even when
+    /// `thinking_disabled` is false. Those calls summarize or classify
+    /// existing text — hidden reasoning there costs ~10x the tokens with
+    /// no benefit (measured 48 vs 531 tokens on the same task).
+    #[serde(default = "default_internal_thinking_disabled")]
+    pub internal_thinking_disabled: bool,
+}
+
+/// Reasoning effort tiers for DeepSeek v4's thinking mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    High,
+    Max,
 }
 
 impl Default for LlmConfig {
@@ -104,6 +133,8 @@ impl Default for LlmConfig {
             temperature: default_temperature(),
             fallback_model: None,
             thinking_disabled: false,
+            reasoning_effort: None,
+            internal_thinking_disabled: default_internal_thinking_disabled(),
         }
     }
 }
@@ -228,4 +259,19 @@ pub fn default_todo_nag_after_turns() -> u32 {
 }
 pub(super) fn default_true() -> bool {
     true
+}
+#[doc(hidden)]
+pub fn default_internal_thinking_disabled() -> bool {
+    true
+}
+
+impl ReasoningEffort {
+    /// Wire-format value for request bodies ("low", "high", "max").
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::Max => "max",
+        }
+    }
 }

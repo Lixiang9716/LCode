@@ -3,8 +3,7 @@
 use crate::config::LlmConfig;
 use crate::llm::sse::{sse_stream, SseData};
 use crate::llm::{
-    ChatMessage, FinishReason, FunctionCall, LlmProvider, LlmResponse, StreamEvent,
-    ToolCallRequest, ToolDefinition,
+    ChatMessage, FinishReason, LlmProvider, LlmResponse, StreamEvent, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -17,6 +16,11 @@ use std::sync::Mutex;
 /// Supports Anthropic-compatible third-party endpoints (DeepSeek, Kimi,
 /// MiniMax, GLM, ...) via `LlmConfig::api_base`; when unset, the official
 /// `https://api.anthropic.com/v1` endpoint is used.
+/// Re-export of [`crate::llm::anthropic_parse::parse_anthropic_response`]
+/// (kept in a separate file to respect the style limit).
+#[doc(hidden)]
+pub use crate::llm::anthropic_parse::parse_anthropic_response;
+
 pub struct AnthropicProvider {
     api_key: String,
     /// Switched at runtime via [`LlmProvider::set_model`] (fallback
@@ -34,6 +38,18 @@ pub struct AnthropicProvider {
     label: String,
     /// Disable the provider's thinking mode when configured.
     thinking_disabled: bool,
+    /// Reasoning effort tier for DeepSeek v4 (`low`/`high`/`max`), sent
+    /// as a `reasoning: {type: "enabled", effort}` block. `None` keeps
+    /// the model default (`high`). Only populated for third-party
+    /// endpoints: the native Anthropic API has no `reasoning` field and
+    /// rejects unknown top-level keys.
+    reasoning_effort: Option<String>,
+    /// DeepSeek's Anthropic-compatible endpoint demands that every
+    /// assistant message carry a `thinking` block when thinking mode is
+    /// on (400 otherwise), but the real hidden reasoning is dropped on
+    /// purpose — replaying it would re-bill it every turn. An empty
+    /// placeholder block satisfies the endpoint at zero context cost.
+    inject_thinking: bool,
 }
 
 /// Default Anthropic API base URL.
@@ -55,13 +71,28 @@ impl AnthropicProvider {
         Self::new_with_key(config.api_key.clone(), config)
     }
 
-    fn new_with_key(api_key: String, config: &LlmConfig) -> anyhow::Result<Self> {
+    #[doc(hidden)]
+    pub fn new_with_key(api_key: String, config: &LlmConfig) -> anyhow::Result<Self> {
         let api_base = config.api_base.clone().unwrap_or_else(|| DEFAULT_API_BASE.to_string());
         let label = if config.provider.is_empty() {
             "anthropic".to_string()
         } else {
             config.provider.clone()
         };
+        // `reasoning` blocks are a DeepSeek-v4 extension; the native
+        // Anthropic endpoint has no such field (it would 400), so the
+        // effort is only wired for third-party (compatible) endpoints.
+        let is_third_party = api_base.trim_end_matches('/') != DEFAULT_API_BASE;
+        let reasoning_effort = if is_third_party {
+            config.reasoning_effort.map(|e| e.as_str().to_string())
+        } else {
+            None
+        };
+        // Thinking placeholder only on DeepSeek-compatible endpoints:
+        // native Anthropic validates real thinking blocks, and other
+        // third parties may not understand the placeholder.
+        let inject_thinking =
+            !config.thinking_disabled && is_third_party && api_base.contains("deepseek");
         Ok(Self {
             api_key,
             model: Mutex::new(config.model.clone()),
@@ -71,6 +102,8 @@ impl AnthropicProvider {
             client: reqwest::Client::new(),
             label,
             thinking_disabled: config.thinking_disabled,
+            reasoning_effort,
+            inject_thinking,
         })
     }
 
@@ -93,38 +126,7 @@ impl LlmProvider for AnthropicProvider {
         // is appended the same way for all of them.
         let url = format!("{}/messages", self.api_base.trim_end_matches('/'));
 
-        // Build system prompt from messages
-        let (system_prompt, chat_messages) = split_system_messages(messages);
-
-        // Convert tools to Anthropic format
-        let tool_defs: Vec<serde_json::Value> = tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.function.name,
-                    "description": t.function.description,
-                    "input_schema": t.function.parameters,
-                })
-            })
-            .collect();
-
-        let mut body = serde_json::json!({
-            "model": self.model.lock().unwrap().clone(),
-            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
-            "temperature": self.temperature,
-            "messages": anthropic_messages_to_json(&chat_messages),
-        });
-        if self.thinking_disabled {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
-        }
-
-        if !system_prompt.is_empty() {
-            body["system"] = serde_json::Value::String(system_prompt);
-        }
-
-        if !tool_defs.is_empty() {
-            body["tools"] = serde_json::to_value(&tool_defs)?;
-        }
+        let body = self.build_body(messages, tools, false)?;
 
         let response = self
             .client
@@ -159,7 +161,7 @@ impl LlmProvider for AnthropicProvider {
         tools: &[ToolDefinition],
     ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
         let url = format!("{}/messages", self.api_base.trim_end_matches('/'));
-        let body = stream_body(self, messages, tools, true);
+        let body = self.build_body(messages, tools, true)?;
         let response = self
             .client
             .post(url)
@@ -210,48 +212,75 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
-/// Build the messages request body; `stream` adds `"stream": true` so the
-/// API answers with SSE events instead of a single response.
-fn stream_body(
-    provider: &AnthropicProvider,
-    messages: &[ChatMessage],
-    tools: &[ToolDefinition],
-    stream: bool,
-) -> serde_json::Value {
-    let (system_prompt, chat_messages) = split_system_messages(messages);
+impl AnthropicProvider {
+    /// Build the messages request body; `stream` adds `"stream": true` so
+    /// the API answers with SSE events instead of a single response.
+    ///
+    /// Prefix-completion requests are rejected: DeepSeek serves that
+    /// feature on the OpenAI-format beta endpoint only.
+    #[doc(hidden)]
+    pub fn build_body(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> anyhow::Result<serde_json::Value> {
+        if crate::llm::has_prefix(messages) {
+            anyhow::bail!(
+                "prefix completion is not supported on the Anthropic-format endpoint; \
+                 use provider = \"openai_compatible\" with api_base = \
+                 \"https://api.deepseek.com\" (beta endpoint) instead"
+            );
+        }
+        let (system_prompt, chat_messages) = split_system_messages(messages);
 
-    // Convert tools to Anthropic format
-    let tool_defs: Vec<serde_json::Value> = tools
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "name": t.function.name,
-                "description": t.function.description,
-                "input_schema": t.function.parameters,
-            })
-        })
-        .collect();
+        // Convert tools to Anthropic format. Server-side tools (e.g.
+        // DeepSeek `web_search`) use their own wire shape: the API
+        // executes them and returns the result in-band.
+        let tool_defs: Vec<serde_json::Value> = tools.iter().map(anthropic_tool_json).collect();
 
-    let mut body = serde_json::json!({
-        "model": provider.model,
-        "max_tokens": provider.max_tokens,
-        "temperature": provider.temperature,
-        "stream": stream,
-        "messages": anthropic_messages_to_json(&chat_messages),
-    });
-    if provider.thinking_disabled {
-        body["thinking"] = serde_json::json!({ "type": "disabled" });
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": stream,
+            "messages": anthropic_messages_to_json(&chat_messages, self.inject_thinking),
+        });
+        if self.thinking_disabled {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else if let Some(effort) = &self.reasoning_effort {
+            body["reasoning"] = serde_json::json!({ "type": "enabled", "effort": effort });
+        }
+
+        if !system_prompt.is_empty() {
+            body["system"] = serde_json::Value::String(system_prompt);
+        }
+
+        if !tool_defs.is_empty() {
+            body["tools"] = serde_json::to_value(&tool_defs).unwrap();
+        }
+
+        Ok(body)
     }
+}
 
-    if !system_prompt.is_empty() {
-        body["system"] = serde_json::Value::String(system_prompt);
+/// Serialize one tool definition into the Anthropic wire format:
+/// server-side tools (e.g. DeepSeek `web_search`) use their own shape —
+/// the API executes them and returns the result in-band — while client
+/// tools keep the function-tool shape.
+fn anthropic_tool_json(t: &ToolDefinition) -> serde_json::Value {
+    if let Some(server) = &t.server {
+        return serde_json::json!({
+            "type": server.tool_type,
+            "name": server.name,
+            "max_queries": server.max_queries,
+        });
     }
-
-    if !tool_defs.is_empty() {
-        body["tools"] = serde_json::to_value(&tool_defs).unwrap();
-    }
-
-    body
+    serde_json::json!({
+        "name": t.function.name,
+        "description": t.function.description,
+        "input_schema": t.function.parameters,
+    })
 }
 
 /// Map one SSE event of an Anthropic streaming response to a
@@ -300,7 +329,7 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
 /// to cache hits, everything else in the input is a cache miss, and
 /// `output_tokens` cover both reasoning and final text on DeepSeek's
 /// Anthropic-compatible endpoint.
-fn anthropic_usage(u: &serde_json::Value) -> crate::llm::Usage {
+pub(crate) fn anthropic_usage(u: &serde_json::Value) -> crate::llm::Usage {
     let input: u32 = u["input_tokens"].as_u64().unwrap_or(0) as u32;
     let output: u32 = u["output_tokens"].as_u64().unwrap_or(0) as u32;
     let hit: u32 = u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
@@ -340,7 +369,10 @@ pub fn split_system_messages(messages: &[ChatMessage]) -> (String, Vec<&ChatMess
 /// tool calls in one assistant message were serialized as separate user
 /// messages and rejected with 400 by strict Anthropic-compatible APIs).
 #[doc(hidden)]
-pub fn anthropic_messages_to_json(messages: &[&ChatMessage]) -> Vec<serde_json::Value> {
+pub fn anthropic_messages_to_json(
+    messages: &[&ChatMessage],
+    inject_thinking: bool,
+) -> Vec<serde_json::Value> {
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut i = 0;
     while i < messages.len() {
@@ -359,16 +391,20 @@ pub fn anthropic_messages_to_json(messages: &[&ChatMessage]) -> Vec<serde_json::
             }
             out.push(serde_json::json!({ "role": "user", "content": results }));
         } else {
-            out.push(anthropic_message_to_json(&messages[i]));
+            out.push(anthropic_message_to_json(&messages[i], inject_thinking));
             i += 1;
         }
     }
     out
 }
 
-/// Convert a ChatMessage to Anthropic-compatible JSON.
+/// Convert a ChatMessage to Anthropic-compatible JSON. When
+/// `inject_thinking` is set (DeepSeek endpoint, thinking mode on), every
+/// assistant message leads with an empty `thinking` block — the endpoint
+/// demands one, and an empty placeholder avoids re-billing the hidden
+/// reasoning on every turn.
 #[doc(hidden)]
-pub fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
+pub fn anthropic_message_to_json(msg: &&ChatMessage, inject_thinking: bool) -> serde_json::Value {
     let role = match msg.role {
         crate::llm::Role::User => "user",
         crate::llm::Role::Assistant => "assistant",
@@ -395,6 +431,7 @@ pub fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
     // Handle assistant messages with tool calls
     else if let Some(ref tool_calls) = msg.tool_calls {
         let mut content_parts: Vec<serde_json::Value> = Vec::new();
+        push_thinking_placeholder(&mut content_parts, inject_thinking);
 
         if !msg.content.is_empty() {
             content_parts.push(serde_json::json!({
@@ -413,6 +450,13 @@ pub fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
         }
 
         json["content"] = serde_json::to_value(content_parts).unwrap();
+    } else if inject_thinking && msg.role == crate::llm::Role::Assistant {
+        // Plain assistant message: the placeholder forces the array
+        // content form (thinking block first, then the text).
+        json["content"] = serde_json::json!([
+            { "type": "thinking", "thinking": "" },
+            { "type": "text", "text": msg.content },
+        ]);
     } else {
         json["content"] = serde_json::json!(msg.content);
     }
@@ -420,60 +464,10 @@ pub fn anthropic_message_to_json(msg: &&ChatMessage) -> serde_json::Value {
     json
 }
 
-/// Append a `text` content block's contents to the accumulated text.
-fn parse_text_block(block: &serde_json::Value, text_content: &mut String) {
-    if let Some(text) = block["text"].as_str() {
-        text_content.push_str(text);
+/// Push the empty thinking placeholder that DeepSeek's Anthropic-compatible
+/// endpoint demands on every assistant message when thinking mode is on.
+fn push_thinking_placeholder(parts: &mut Vec<serde_json::Value>, inject: bool) {
+    if inject {
+        parts.push(serde_json::json!({ "type": "thinking", "thinking": "" }));
     }
-}
-
-/// Extract a `tool_use` content block into a [`ToolCallRequest`].
-#[doc(hidden)]
-pub fn parse_tool_use(
-    block: &serde_json::Value,
-    tool_calls: &mut Vec<ToolCallRequest>,
-) -> anyhow::Result<()> {
-    tool_calls.push(ToolCallRequest {
-        id: block["id"].as_str().unwrap_or("").to_string(),
-        call_type: "function".to_string(),
-        function: FunctionCall {
-            name: block["name"].as_str().unwrap_or("").to_string(),
-            arguments: serde_json::to_string(&block["input"])?,
-        },
-    });
-    Ok(())
-}
-
-/// Parse Anthropic response into an LlmResponse.
-#[doc(hidden)]
-pub fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
-    let content_blocks = data["content"].as_array();
-    let mut text_content = String::new();
-    let mut tool_calls: Vec<ToolCallRequest> = Vec::new();
-
-    if let Some(blocks) = content_blocks {
-        for block in blocks {
-            match block["type"].as_str() {
-                Some("text") => parse_text_block(block, &mut text_content),
-                Some("tool_use") => parse_tool_use(block, &mut tool_calls)?,
-                _ => {}
-            }
-        }
-    }
-
-    let finish_reason = match data["stop_reason"].as_str() {
-        Some("end_turn") => FinishReason::Stop,
-        Some("max_tokens") => FinishReason::Length,
-        Some("tool_use") => FinishReason::ToolCalls,
-        _ => FinishReason::Unknown,
-    };
-
-    let usage = data.get("usage").map(anthropic_usage).unwrap_or_default();
-
-    Ok(LlmResponse {
-        content: text_content,
-        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-        usage,
-        finish_reason,
-    })
 }

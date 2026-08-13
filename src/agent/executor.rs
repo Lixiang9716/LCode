@@ -13,13 +13,13 @@ use crate::agent::{
     BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
     HookRegistry, McpRegistry, Planner, TodoManager,
 };
-use crate::llm::{FinishReason, LlmProvider};
+use crate::llm::LlmProvider;
 use crate::tools::{ToolRegistry, ToolResult};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
-enum LoopControl {
+pub(crate) enum LoopControl {
     /// Keep running the agent loop.
     Continue,
     /// Stop the loop (task finished).
@@ -48,6 +48,13 @@ pub struct SessionState {
     /// User-tunable runtime parameters (compaction/team/subagent/...).
     /// `None` keeps the built-in defaults (tests).
     pub tuning: Option<Arc<crate::config::RuntimeTuning>>,
+    /// Provider for internal utility calls (compaction summaries, memory
+    /// extraction): thinking mode is forced off on it by default (P0-1).
+    /// `None` (tests) falls back to the main provider.
+    pub internal_provider: Option<Box<dyn LlmProvider>>,
+    /// Server-side `web_search` declaration for DeepSeek's
+    /// Anthropic-compatible endpoint (P1-2); `None` disables it.
+    pub web_search: Option<crate::llm::ServerToolSpec>,
 }
 
 /// The executor drives the agent loop.
@@ -73,6 +80,11 @@ pub struct Executor {
     pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
     pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
     pub(crate) tuning: Option<Arc<crate::config::RuntimeTuning>>,
+    /// Provider for internal utility calls; `None` falls back to
+    /// [`Self::provider`] (tests).
+    pub(crate) internal_provider: Option<Box<dyn LlmProvider>>,
+    /// Server-side web_search declaration (appended to the tool pool).
+    pub(crate) web_search: Option<crate::llm::ServerToolSpec>,
     /// Whether the session ended via abort (e.g. max turns) instead
     /// of finishing normally; surfaced to the CLI for the exit code.
     pub(crate) aborted: bool,
@@ -107,6 +119,8 @@ impl Executor {
             memory_store: session.memory_store,
             team_bus: session.team_bus,
             tuning: session.tuning,
+            internal_provider: session.internal_provider,
+            web_search: session.web_search,
             aborted: false,
             last_turn: 0,
             last_usage: crate::llm::Usage::default(),
@@ -293,77 +307,9 @@ impl Executor {
         Ok((aborted, turn, total_usage))
     }
 
-    /// Handle a single LLM response.
-    ///
-    /// Executes any requested tool calls (recording results in memory) or
-    /// publishes the final answer. Returns the loop control signal.
-    ///
-    /// `text_already_published` suppresses the one-shot text publish: the
-    /// streaming path emits the text as it arrives, so re-publishing the
-    /// accumulated block would print it twice in the REPL.
-    async fn handle_response(
-        &mut self,
-        response: crate::llm::LlmResponse,
-        memory: &mut ConversationMemory,
-        text_already_published: bool,
-    ) -> anyhow::Result<LoopControl> {
-        match response.finish_reason {
-            FinishReason::ToolCalls => {
-                if let Some(ref tool_calls) = response.tool_calls {
-                    // Publish the assistant's text content if any (in
-                    // streaming mode this was already streamed or shown
-                    // as a preview before the fallback chat call).
-                    publish_text_unless(&self.runtime, &response.content, text_already_published);
-
-                    // Add the assistant message with tool calls to memory
-                    memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
-
-                    // Execute each tool call
-                    self.execute_tool_calls(tool_calls, memory).await
-                } else {
-                    Ok(LoopControl::Continue)
-                }
-            }
-            FinishReason::Stop | FinishReason::Length => {
-                // Final response — no more tool calls
-                publish_text_unless(&self.runtime, &response.content, text_already_published);
-                memory.add_assistant(response.content);
-                Ok(LoopControl::Stop)
-            }
-            FinishReason::ContentFilter => {
-                self.runtime.publish(AgentEvent::Error {
-                    message: "Response blocked by content filter.".to_string(),
-                });
-                Ok(LoopControl::Stop)
-            }
-            FinishReason::Unknown => {
-                // Assume stop — just output the content
-                publish_text_unless(&self.runtime, &response.content, text_already_published);
-                Ok(LoopControl::Stop)
-            }
-        }
-    }
-
-    /// Execute a sequence of tool calls, recording each result in memory.
-    ///
-    /// Stops at the first abort signal from the user.
-    async fn execute_tool_calls(
-        &mut self,
-        tool_calls: &[crate::llm::ToolCallRequest],
-        memory: &mut ConversationMemory,
-    ) -> anyhow::Result<LoopControl> {
-        for tc in tool_calls {
-            match self.handle_tool_call(tc, memory).await? {
-                LoopControl::Abort => return Ok(LoopControl::Abort),
-                LoopControl::Stop | LoopControl::Continue => {}
-            }
-        }
-        Ok(LoopControl::Continue)
-    }
-
     /// Handle a single tool call: request approval via the event bus,
     /// execute, and publish the result.
-    async fn handle_tool_call(
+    pub(crate) async fn handle_tool_call(
         &mut self,
         tc: &crate::llm::ToolCallRequest,
         memory: &mut ConversationMemory,
@@ -462,23 +408,6 @@ impl Executor {
         self.hooks.run(&post_ctx);
 
         Ok(LoopControl::Continue)
-    }
-}
-
-/// Publish assistant text as a [`AgentEvent::TextGenerated`] event when
-/// non-empty.
-fn publish_text(runtime: &AgentRuntime, content: &str) {
-    if !content.is_empty() {
-        runtime.publish(AgentEvent::TextGenerated { content: content.to_string() });
-    }
-}
-
-/// [`publish_text`], unless the text was already published (streaming
-/// mode emits it delta-by-delta, so a second one-shot publish would print
-/// it twice in the REPL).
-fn publish_text_unless(runtime: &AgentRuntime, content: &str, already_published: bool) {
-    if !already_published {
-        publish_text(runtime, content);
     }
 }
 

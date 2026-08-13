@@ -20,6 +20,10 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
             println!("  llm.max_tokens      - Max tokens per response");
             println!("  llm.temperature     - Generation temperature (0.0-2.0)");
             println!("  llm.fallback_model  - Fallback model when retries are exhausted");
+            println!("  llm.thinking_disabled - Disable the provider's thinking mode (true/false)");
+            println!("  llm.reasoning_effort  - Thinking effort: low / high / max");
+            println!("  llm.internal_thinking_disabled - Force thinking off for internal calls (true/false)");
+            println!("  memory.json_lock    - Lock memory extraction replies to JSON via prefix (true/false)");
             println!("  agent.system_prompt - Custom system prompt");
             println!("  agent.max_turns     - Max conversation turns");
             println!("  agent.require_approval - Require approval for tool calls");
@@ -51,6 +55,12 @@ pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
         "llm.max_tokens" => Ok(cfg.llm.max_tokens.to_string()),
         "llm.temperature" => Ok(cfg.llm.temperature.to_string()),
         "llm.fallback_model" => Ok(cfg.llm.fallback_model.clone().unwrap_or_default()),
+        "llm.thinking_disabled" => Ok(cfg.llm.thinking_disabled.to_string()),
+        "llm.reasoning_effort" => {
+            Ok(cfg.llm.reasoning_effort.map(|e| e.as_str().to_string()).unwrap_or_default())
+        }
+        "llm.internal_thinking_disabled" => Ok(cfg.llm.internal_thinking_disabled.to_string()),
+        "memory.json_lock" => Ok(cfg.memory.json_lock.to_string()),
         "agent.system_prompt" => Ok(cfg.agent.system_prompt.clone()),
         "agent.max_turns" => Ok(cfg.agent.max_turns.to_string()),
         "agent.require_approval" => Ok(cfg.agent.require_approval.to_string()),
@@ -92,6 +102,17 @@ pub fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
         "agent.system_prompt" => cfg.agent.system_prompt = value.to_string(),
         "agent.max_turns" => cfg.agent.max_turns = value.parse()?,
         "agent.require_approval" => cfg.agent.require_approval = value.parse()?,
+        "llm.thinking_disabled" => cfg.llm.thinking_disabled = value.parse()?,
+        "llm.reasoning_effort" => {
+            cfg.llm.reasoning_effort = match value.to_lowercase().as_str() {
+                "low" => Some(crate::config::ReasoningEffort::Low),
+                "high" => Some(crate::config::ReasoningEffort::High),
+                "max" => Some(crate::config::ReasoningEffort::Max),
+                other => anyhow::bail!("Invalid reasoning_effort: {other} (low/high/max)"),
+            }
+        }
+        "llm.internal_thinking_disabled" => cfg.llm.internal_thinking_disabled = value.parse()?,
+        "memory.json_lock" => cfg.memory.json_lock = value.parse()?,
         "tools.enable_web" => cfg.tools.enable_web = value.parse()?,
         _ => anyhow::bail!(
             "Unknown config key: {}. Use `lcode config list` to see available keys.",

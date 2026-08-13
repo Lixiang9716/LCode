@@ -133,6 +133,16 @@ pub struct MemoryConfig {
     /// Dialogue characters fed to extraction
     #[serde(default = "default_max_extract_chars")]
     pub max_extract_chars: usize,
+
+    /// Lock extraction/consolidation replies to JSON by forcing the
+    /// reply to start with `[` (DeepSeek beta prefix completion). The
+    /// model cannot then preamble with prose, so the JSON fence parses
+    /// reliably. Requires the OpenAI-format DeepSeek endpoint
+    /// (`provider = "openai_compatible"` + `api_base =
+    /// "https://api.deepseek.com"`); other endpoints reject prefix
+    /// requests and the extraction falls back to the plain prompt.
+    #[serde(default)]
+    pub json_lock: bool,
 }
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -140,6 +150,7 @@ impl Default for MemoryConfig {
             consolidate_threshold: default_consolidate_threshold(),
             max_relevant: default_max_relevant(),
             max_extract_chars: default_max_extract_chars(),
+            json_lock: false,
         }
     }
 }

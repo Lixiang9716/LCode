@@ -25,6 +25,10 @@ pub struct OpenAiProvider {
     client: reqwest::Client,
     /// Disable the provider's thinking mode when configured.
     thinking_disabled: bool,
+    /// Reasoning effort tier (DeepSeek v4): `low`/`high`/`max`, sent as
+    /// the top-level `reasoning_effort` parameter. `None` keeps the
+    /// model default (`high`).
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAiProvider {
@@ -47,6 +51,7 @@ impl OpenAiProvider {
             temperature: config.temperature,
             client: reqwest::Client::new(),
             thinking_disabled: config.thinking_disabled,
+            reasoning_effort: config.reasoning_effort.map(|e| e.as_str().to_string()),
         })
     }
 }
@@ -58,16 +63,9 @@ impl LlmProvider for OpenAiProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> anyhow::Result<LlmResponse> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-        let body = build_body(
-            self.model.lock().unwrap().clone(),
-            self.max_tokens.load(Ordering::Relaxed),
-            self.temperature,
-            messages,
-            tools,
-            false,
-            self.thinking_disabled,
-        );
+        let prefix = crate::llm::has_prefix(messages);
+        let url = completion_url(&self.api_base, prefix);
+        let body = self.build_body(messages, tools, false);
         let response = self
             .client
             .post(&url)
@@ -91,21 +89,24 @@ impl LlmProvider for OpenAiProvider {
     /// SSE response is consumed chunk by chunk, mapping each `data:` line
     /// to a [`StreamEvent`] (`choices[0].delta.content` → `TextDelta`,
     /// `finish_reason` → `Done`, `[DONE]` → `Done(Stop)`).
+    ///
+    /// Prefix-completion requests (DeepSeek beta) are not streamed: the
+    /// beta endpoint is documented for plain completions only, so a
+    /// prefix message on this path is rejected up front.
     async fn chat_stream(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamEvent>>> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-        let body = build_body(
-            self.model.lock().unwrap().clone(),
-            self.max_tokens.load(Ordering::Relaxed),
-            self.temperature,
-            messages,
-            tools,
-            true,
-            self.thinking_disabled,
-        );
+        let prefix = crate::llm::has_prefix(messages);
+        if prefix {
+            anyhow::bail!(
+                "prefix completion is not available in streaming mode; \
+                 use the plain chat path (OpenAI provider)"
+            );
+        }
+        let url = completion_url(&self.api_base, false);
+        let body = self.build_body(messages, tools, true);
         let response = self
             .client
             .post(&url)
@@ -159,34 +160,56 @@ impl LlmProvider for OpenAiProvider {
     }
 }
 
-/// Build the chat-completions request body; `stream` adds the
-/// `"stream": true` flag that makes the API answer with SSE deltas.
-fn build_body(
-    model: String,
-    max_tokens: u32,
-    temperature: f32,
-    messages: &[ChatMessage],
-    tools: &[ToolDefinition],
-    stream: bool,
-    thinking_disabled: bool,
-) -> serde_json::Value {
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": stream,
-    });
-    if thinking_disabled {
-        body["thinking"] = serde_json::json!({ "type": "disabled" });
-    }
+impl OpenAiProvider {
+    /// Build the chat-completions request body; `stream` adds the
+    /// `"stream": true` flag that makes the API answer with SSE deltas.
+    /// Prefix requests use the same body — the marker lives in the
+    /// trailing assistant message; only the URL changes (see
+    /// [`completion_url`]).
+    #[doc(hidden)]
+    pub fn build_body(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        stream: bool,
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "model": self.model.lock().unwrap().clone(),
+            "messages": messages.iter().map(message_to_json).collect::<Vec<_>>(),
+            "max_tokens": self.max_tokens.load(Ordering::Relaxed),
+            "temperature": self.temperature,
+            "stream": stream,
+        });
+        if self.thinking_disabled {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::Value::String(effort.clone());
+        }
 
-    if !tools.is_empty() {
-        body["tools"] = serde_json::to_value(tools).unwrap();
-        body["tool_choice"] = serde_json::json!("auto");
-    }
+        // Server-side tools (web_search) are Anthropic-endpoint only:
+        // never send them to chat completions.
+        let client_tools: Vec<&ToolDefinition> =
+            tools.iter().filter(|t| t.server.is_none()).collect();
+        if !client_tools.is_empty() {
+            body["tools"] = serde_json::to_value(&client_tools).unwrap();
+            body["tool_choice"] = serde_json::json!("auto");
+        }
 
-    body
+        body
+    }
+}
+
+/// Chat-completions URL; prefix requests route to the beta endpoint
+/// (`{api_base}/beta/chat/completions`), which is where DeepSeek serves
+/// the prefix-completion feature.
+#[doc(hidden)]
+pub fn completion_url(api_base: &str, prefix: bool) -> String {
+    let base = api_base.trim_end_matches('/');
+    if prefix {
+        format!("{base}/beta/chat/completions")
+    } else {
+        format!("{base}/chat/completions")
+    }
 }
 
 /// Map one SSE chunk of an OpenAI streaming response to a
@@ -255,6 +278,12 @@ pub fn message_to_json(msg: &ChatMessage) -> serde_json::Value {
         json["tool_calls"] = serde_json::to_value(tool_calls).unwrap();
     }
 
+    // DeepSeek beta prefix completion: the flagged assistant message
+    // tells the API to continue generating from its content.
+    if msg.prefix == Some(true) {
+        json["prefix"] = serde_json::Value::Bool(true);
+    }
+
     json
 }
 
@@ -280,5 +309,6 @@ pub fn parse_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
 
     let usage = parse_usage(data).unwrap_or_default();
 
-    Ok(LlmResponse { content, tool_calls, usage, finish_reason })
+    // Chat completions has no server-side tools: the list is always empty.
+    Ok(LlmResponse { content, tool_calls, server_results: Vec::new(), usage, finish_reason })
 }

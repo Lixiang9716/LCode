@@ -64,6 +64,8 @@ pub struct MemoryStore {
     consolidate_threshold: usize,
     max_relevant: usize,
     max_extract_chars: usize,
+    /// Lock extraction replies to JSON via prefix completion (P1-1).
+    json_lock: bool,
 }
 
 impl MemoryStore {
@@ -85,6 +87,7 @@ impl MemoryStore {
             consolidate_threshold: config.consolidate_threshold,
             max_relevant: config.max_relevant,
             max_extract_chars: config.max_extract_chars,
+            json_lock: config.json_lock,
         })
     }
 
@@ -199,7 +202,7 @@ impl MemoryStore {
             self.existing_catalog(),
             truncate(dialogue, self.max_extract_chars)
         );
-        let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
+        let response = self.locked_chat(&prompt, provider).await?;
         Ok(self.write_items(&extract_json_array(&response.content)).len())
     }
 
@@ -237,7 +240,7 @@ impl MemoryStore {
              {}",
             truncate(&catalog, MAX_CONSOLIDATE_CHARS)
         );
-        let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
+        let response = self.locked_chat(&prompt, provider).await?;
         let written = self.write_items(&extract_json_array(&response.content));
         if written.is_empty() {
             // Never wipe the store on an unusable reply.
@@ -250,6 +253,27 @@ impl MemoryStore {
         }
         self.rebuild_index();
         Ok(written.len())
+    }
+
+    /// Ask the LLM with an optional JSON-lock prefix (beta prefix
+    /// completion); endpoints without prefix support reject it, and the
+    /// call transparently retries without the lock.
+    async fn locked_chat(
+        &self,
+        prompt: &str,
+        provider: &dyn crate::llm::LlmProvider,
+    ) -> anyhow::Result<crate::llm::LlmResponse> {
+        if self.json_lock {
+            let messages =
+                vec![ChatMessage::user(prompt.to_string()), ChatMessage::assistant_prefix("[")];
+            match provider.chat(&messages, &[]).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    tracing::debug!(error = %e, "json-lock prefix call rejected; retrying without prefix")
+                }
+            }
+        }
+        provider.chat(&[ChatMessage::user(prompt.to_string())], &[]).await
     }
 
     /// Select memories relevant to `query`: an LLM picks catalog indices
@@ -279,7 +303,7 @@ impl MemoryStore {
              Memory catalog:\n{catalog}",
             truncate(query, MAX_QUERY_CHARS)
         );
-        let indices: Vec<usize> = match provider.chat(&[ChatMessage::user(prompt)], &[]).await {
+        let indices: Vec<usize> = match self.locked_chat(&prompt, provider).await {
             Ok(response) => extract_json_array(&response.content)
                 .into_iter()
                 .filter_map(|v| v.as_u64())

@@ -166,12 +166,17 @@ defaults match the pre-configuration behavior; a full example:
 [llm]
 provider = "deepseek"          # openai / anthropic / deepseek / kimi / minimax / glm
 api_key = "sk-..."
-model = "deepseek-chat"
+model = "deepseek-v4-flash"    # 旧名 deepseek-chat/reasoner 已退役（仍可用，映射到 flash）
 max_tokens = 8192
 temperature = 0.3
 fallback_model = ""            # optional failover model
 thinking_disabled = false      # true: skip DeepSeek v4's hidden reasoning
                                # tokens (~79 fewer prompt tokens, faster)
+reasoning_effort = "high"      # "low" / "high" / "max"（thinking 开启时生效）
+                               # low 实测省 ~65% 推理 token、~50% 延迟，正确率无损失
+internal_thinking_disabled = true
+                               # true（默认）: 内部工具调用（压缩摘要、记忆提取/合并）
+                               # 强制关闭思考——同任务实测 48 vs 531 tokens
 
 [agent]
 system_prompt = "You are LCode, an expert software engineer..."
@@ -200,6 +205,8 @@ max_tool_result_chars = 50000
 consolidate_threshold = 10     # files before consolidation kicks in
 max_relevant = 5               # memories injected into the system prompt
 max_extract_chars = 4000       # dialogue characters fed to extraction
+json_lock = false              # true: 用 beta 前缀续写强制记忆提取以 `[` 开头
+                               # 的 JSON 回复（需 openai_compatible + api.deepseek.com）
 
 [background]
 default_timeout_secs = 300
@@ -221,12 +228,29 @@ max_items = 20
 allowed_dirs = []
 allowed_commands = []
 denied_commands = ["rm -rf /", "sudo", "chmod 777", "mkfs"]
-enable_web = true
+enable_web = true              # deepseek 端点自动启用服务端 web_search 工具
 ```
 
 Each value can also be overridden per invocation via its `LCODE_*`
 environment variable, e.g. `LCODE_TEAM_IDLE_INTERVAL_SECS=2 lcode run ...`.
 See `src/config/mod.rs` (`apply_env_overrides`) for the full key list.
+
+### DeepSeek 调优建议
+
+实测（[`docs/deepseek-api-report.md`](docs/deepseek-api-report.md)）得出的配置建议：
+
+- **上下文预算**：flash 有 1M 上下文，默认 50K 压缩阈值只用了 5%。日常任务可上调到
+  `compaction.auto_threshold = 150000`~`250000`，减少压缩次数并让 KV cache 命中更多轮。
+  消息顺序已经"稳定前缀在前"（system + 工具 schema + 记忆 + 变化尾巴），是缓存友好的
+  布局，不要打乱。
+- **推理档位**：机械性任务（改测试、格式化、查错）用 `reasoning_effort = "low"`；
+  架构设计/重构用默认 `high` 或 `max`。内部调用（压缩/记忆）默认已强制关思考。
+- **联网检索**：`deepseek` 端点（Anthropic 兼容）自动暴露服务端 `web_search` 工具，
+  由 API 执行搜索并回传结果，无需本地工具；`tools.enable_web = false` 关闭。
+- **JSON 锁定**：`memory.json_lock = true` 时记忆提取走 beta 前缀续写端点
+  （`https://api.deepseek.com/beta/chat/completions`），模型被迫以 `[` 开头，
+  无法前置废话，JSON 解析更可靠；需要 `provider = "openai_compatible"` +
+  `api_base = "https://api.deepseek.com"`。
 
 ## 📊 Token Usage & Cost
 

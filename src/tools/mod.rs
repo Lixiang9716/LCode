@@ -110,6 +110,7 @@ impl ToolRegistry {
                     description: t.description().to_string(),
                     parameters: t.parameters(),
                 },
+                server: None,
             })
             .collect()
     }

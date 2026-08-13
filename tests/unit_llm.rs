@@ -45,6 +45,7 @@ fn test_chat_message_constructors() {
 fn test_tool_definition_serializes_to_expected_json() {
     let def = ToolDefinition {
         tool_type: "function".to_string(),
+        server: None,
         function: FunctionDefinition {
             name: "write_file".to_string(),
             description: "Write content to a file".to_string(),
@@ -350,11 +351,11 @@ fn test_split_system_messages_no_system() {
 
 #[test]
 fn test_anthropic_message_to_json_plain_roles() {
-    let user = anthropic_message_to_json(&&ChatMessage::user("hi"));
+    let user = anthropic_message_to_json(&&ChatMessage::user("hi"), false);
     assert_eq!(user["role"], "user");
     assert_eq!(user["content"], "hi");
 
-    let assistant = anthropic_message_to_json(&&ChatMessage::assistant("yo"));
+    let assistant = anthropic_message_to_json(&&ChatMessage::assistant("yo"), false);
     assert_eq!(assistant["role"], "assistant");
     assert_eq!(assistant["content"], "yo");
 }
@@ -362,7 +363,7 @@ fn test_anthropic_message_to_json_plain_roles() {
 #[test]
 fn test_anthropic_message_to_json_tool_result() {
     let msg = ChatMessage::tool("wrote 5 bytes", "toolu_01".to_string());
-    let json = anthropic_message_to_json(&&msg);
+    let json = anthropic_message_to_json(&&msg, false);
     assert_eq!(json["role"], "user");
     assert_eq!(json["content"][0]["type"], "tool_result");
     assert_eq!(json["content"][0]["tool_use_id"], "toolu_01");
@@ -381,7 +382,7 @@ fn test_anthropic_message_to_json_assistant_tool_calls() {
         },
     }]);
 
-    let json = anthropic_message_to_json(&&msg);
+    let json = anthropic_message_to_json(&&msg, false);
     assert_eq!(json["role"], "assistant");
     assert_eq!(json["content"][0]["type"], "text");
     assert_eq!(json["content"][0]["text"], "Let me check");

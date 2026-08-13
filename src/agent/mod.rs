@@ -44,6 +44,7 @@ mod message_bus;
 mod planner;
 mod prompt;
 mod protocol;
+mod provider_build;
 mod recorder;
 mod render;
 mod retry;
@@ -88,6 +89,7 @@ pub use protocol::{
     ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
     ReviewPlanTool, SubmitPlanTool,
 };
+pub use provider_build::{build_internal_provider, build_provider, web_search_spec};
 pub use recorder::spawn_event_recorder;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
@@ -359,6 +361,11 @@ async fn execute_session(
         memory_store: Some(memory_store),
         team_bus: Some(team_bus.clone()),
         tuning: Some(Arc::new(crate::config::RuntimeTuning::from_config(config))),
+        // Internal utility calls (compaction summaries, memory
+        // extraction) run on a dedicated provider with thinking mode
+        // forced off — see `build_internal_provider`.
+        internal_provider: Some(build_internal_provider(config)?),
+        web_search: web_search_spec(config),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
@@ -428,60 +435,6 @@ fn print_team_usage(workspace: &std::path::Path, model: &str) {
             crate::llm::format_cost(crate::llm::estimate_cost(model, &usage))
         );
     }
-}
-
-/// Kind of LLM backend a provider alias resolves to.
-enum ProviderKind {
-    Anthropic,
-    OpenAi,
-}
-
-/// Build the appropriate LLM provider from configuration.
-///
-/// Provider aliases (all map to the existing Anthropic/OpenAI-compatible
-/// implementations, only the default endpoint differs):
-/// - `openai` / `openai_compatible` — OpenAI API or any OpenAI-compatible endpoint
-/// - `anthropic` / `claude` — Anthropic native endpoint
-/// - `deepseek`, `kimi` — Anthropic-compatible third-party endpoints
-/// - `minimax`, `glm` — OpenAI-compatible third-party endpoints
-///
-/// An explicit `llm.api_base` always wins over the alias's default
-/// endpoint. The result is wrapped in a [`RetryProvider`] so every LLM
-/// call gets retry/backoff and max_tokens-upgrade semantics (#4).
-pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let provider = config.llm.provider.to_lowercase();
-    let (kind, default_base) = match provider.as_str() {
-        "openai" | "openai_compatible" => (ProviderKind::OpenAi, None),
-        "anthropic" | "claude" => (ProviderKind::Anthropic, None),
-        "deepseek" => (ProviderKind::Anthropic, Some("https://api.deepseek.com/anthropic")),
-        "kimi" => (ProviderKind::Anthropic, Some("https://api.moonshot.cn/anthropic")),
-        "minimax" => (ProviderKind::OpenAi, Some("https://api.minimaxi.com/v1")),
-        "glm" => (ProviderKind::OpenAi, Some("https://open.bigmodel.cn/api/paas/v4")),
-        other => anyhow::bail!(
-            "Unknown LLM provider: {other}. Supported: openai, openai_compatible, \
-             anthropic, claude, deepseek, kimi, minimax, glm"
-        ),
-    };
-
-    // Explicit `llm.api_base` wins; otherwise fall back to the alias's
-    // default endpoint.
-    let api_base = config.llm.api_base.clone().or_else(|| default_base.map(str::to_string));
-    let llm = crate::config::LlmConfig { api_base, ..config.llm.clone() };
-
-    let inner: Box<dyn LlmProvider> = match kind {
-        ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
-        ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
-    };
-    let policy = RetryPolicy {
-        max_attempts: config.retry.max_attempts,
-        base_delay_ms: config.retry.base_delay_ms,
-        max_delay_ms: config.retry.max_delay_ms,
-    };
-    let retry = RetryProvider::with_fallback(inner, policy, config.llm.fallback_model.clone());
-    // Seed the retry budget (and thus the inner provider's request body)
-    // with the configured max_tokens instead of the hardcoded default.
-    retry.set_max_tokens(config.llm.max_tokens);
-    Ok(Box::new(retry))
 }
 
 /// Resolve the workspace root for session state (skills dir, task board,

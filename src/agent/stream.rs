@@ -66,7 +66,13 @@ impl Executor {
             // authoritative content via handle_response.
             return self.provider.chat(context, tool_defs).await;
         }
-        Ok(LlmResponse { content, tool_calls: None, usage, finish_reason })
+        Ok(LlmResponse {
+            content,
+            tool_calls: None,
+            server_results: Vec::new(),
+            usage,
+            finish_reason,
+        })
     }
 }
 

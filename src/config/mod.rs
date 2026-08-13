@@ -22,7 +22,7 @@ pub use settings::{
     default_context_size, default_max_tokens, default_max_turns, default_model,
     default_require_approval, default_temperature,
 };
-pub use settings::{AgentConfig, Config, LlmConfig, ToolsConfig};
+pub use settings::{AgentConfig, Config, LlmConfig, ReasoningEffort, ToolsConfig};
 use std::path::PathBuf;
 pub use tuning::{
     BackgroundConfig, CompactionConfig, EventsConfig, MemoryConfig, RetryConfig, RuntimeTuning,
@@ -64,27 +64,7 @@ pub fn global_config_path() -> Option<PathBuf> {
 /// Merge two configs, with `other` overriding fields in `base`.
 #[doc(hidden)]
 pub fn merge_config(base: &mut Config, other: Config) {
-    if !other.llm.provider.is_empty() {
-        base.llm.provider = other.llm.provider;
-    }
-    if !other.llm.api_key.is_empty() {
-        base.llm.api_key = other.llm.api_key;
-    }
-    if other.llm.model != default_model() || !other.llm.model.is_empty() {
-        base.llm.model = other.llm.model;
-    }
-    if other.llm.api_base.is_some() {
-        base.llm.api_base = other.llm.api_base;
-    }
-    if other.llm.max_tokens != default_max_tokens() {
-        base.llm.max_tokens = other.llm.max_tokens;
-    }
-    if other.llm.temperature != default_temperature() {
-        base.llm.temperature = other.llm.temperature;
-    }
-    if other.llm.fallback_model.is_some() {
-        base.llm.fallback_model = other.llm.fallback_model;
-    }
+    merge_llm(&mut base.llm, other.llm);
     if !other.agent.system_prompt.is_empty() {
         base.agent.system_prompt = other.agent.system_prompt;
     }
@@ -107,31 +87,15 @@ pub fn merge_config(base: &mut Config, other: Config) {
         base.tools.denied_commands = other.tools.denied_commands;
     }
     base.tools.enable_web = other.tools.enable_web;
+    if other.memory.json_lock {
+        base.memory.json_lock = true;
+    }
 }
 
 /// Apply environment variable overrides (LCODE_ prefix).
 #[doc(hidden)]
 pub fn apply_env_overrides(cfg: &mut Config) {
-    if let Ok(val) = std::env::var("LCODE_LLM_PROVIDER") {
-        cfg.llm.provider = val;
-    }
-    if let Ok(val) = std::env::var("LCODE_LLM_API_KEY") {
-        cfg.llm.api_key = val;
-    }
-    if let Ok(val) = std::env::var("LCODE_LLM_MODEL") {
-        cfg.llm.model = val;
-    }
-    if let Ok(val) = std::env::var("LCODE_LLM_API_BASE") {
-        cfg.llm.api_base = Some(val);
-    }
-    if let Ok(val) = std::env::var("LCODE_LLM_MAX_TOKENS") {
-        if let Ok(n) = val.parse() {
-            cfg.llm.max_tokens = n;
-        }
-    }
-    if let Ok(val) = std::env::var("LCODE_LLM_FALLBACK_MODEL") {
-        cfg.llm.fallback_model = Some(val);
-    }
+    apply_llm_env_overrides(&mut cfg.llm);
 
     // Runtime tuning overrides (one env var per tunable).
     set_u32_env("LCODE_AGENT_TODO_NAG_AFTER_TURNS", &mut cfg.agent.todo_nag_after_turns);
@@ -155,8 +119,8 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     set_usize_env("LCODE_EVENTS_CHANNEL_CAPACITY", &mut cfg.events.channel_capacity);
     set_usize_env("LCODE_EVENTS_COMMAND_CAPACITY", &mut cfg.events.command_capacity);
     set_usize_env("LCODE_TODO_MAX_ITEMS", &mut cfg.todo.max_items);
-    if let Ok(val) = std::env::var("LCODE_LLM_THINKING_DISABLED") {
-        cfg.llm.thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
+    if let Ok(val) = std::env::var("LCODE_MEMORY_JSON_LOCK") {
+        cfg.memory.json_lock = val == "1" || val.eq_ignore_ascii_case("true");
     }
 }
 
@@ -184,5 +148,78 @@ fn set_usize_env(key: &str, target: &mut usize) {
         if let Ok(n) = val.parse() {
             *target = n;
         }
+    }
+}
+
+/// Merge `other` LLM settings over `base`, keeping unset fields in
+/// `other` (defaults) from stomping explicit values in `base`.
+fn merge_llm(base: &mut LlmConfig, other: LlmConfig) {
+    if !other.provider.is_empty() {
+        base.provider = other.provider;
+    }
+    if !other.api_key.is_empty() {
+        base.api_key = other.api_key;
+    }
+    if other.model != default_model() || !other.model.is_empty() {
+        base.model = other.model;
+    }
+    if other.api_base.is_some() {
+        base.api_base = other.api_base;
+    }
+    if other.max_tokens != default_max_tokens() {
+        base.max_tokens = other.max_tokens;
+    }
+    if other.temperature != default_temperature() {
+        base.temperature = other.temperature;
+    }
+    if other.fallback_model.is_some() {
+        base.fallback_model = other.fallback_model;
+    }
+    if other.thinking_disabled {
+        base.thinking_disabled = true;
+    }
+    if other.reasoning_effort.is_some() {
+        base.reasoning_effort = other.reasoning_effort;
+    }
+    if !other.internal_thinking_disabled {
+        base.internal_thinking_disabled = false;
+    }
+}
+
+/// Apply the `LCODE_LLM_*` environment overrides.
+fn apply_llm_env_overrides(llm: &mut LlmConfig) {
+    if let Ok(val) = std::env::var("LCODE_LLM_PROVIDER") {
+        llm.provider = val;
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_API_KEY") {
+        llm.api_key = val;
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_MODEL") {
+        llm.model = val;
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_API_BASE") {
+        llm.api_base = Some(val);
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_MAX_TOKENS") {
+        if let Ok(n) = val.parse() {
+            llm.max_tokens = n;
+        }
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_FALLBACK_MODEL") {
+        llm.fallback_model = Some(val);
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_THINKING_DISABLED") {
+        llm.thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_REASONING_EFFORT") {
+        llm.reasoning_effort = match val.to_lowercase().as_str() {
+            "low" => Some(settings::ReasoningEffort::Low),
+            "high" => Some(settings::ReasoningEffort::High),
+            "max" => Some(settings::ReasoningEffort::Max),
+            _ => None,
+        };
+    }
+    if let Ok(val) = std::env::var("LCODE_LLM_INTERNAL_THINKING_DISABLED") {
+        llm.internal_thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
     }
 }
