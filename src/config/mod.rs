@@ -65,18 +65,7 @@ pub fn global_config_path() -> Option<PathBuf> {
 #[doc(hidden)]
 pub fn merge_config(base: &mut Config, other: Config) {
     merge_llm(&mut base.llm, other.llm);
-    if !other.agent.system_prompt.is_empty() {
-        base.agent.system_prompt = other.agent.system_prompt;
-    }
-    if other.agent.max_turns != default_max_turns() {
-        base.agent.max_turns = other.agent.max_turns;
-    }
-    if other.agent.require_approval != default_require_approval() {
-        base.agent.require_approval = other.agent.require_approval;
-    }
-    if other.agent.context_size != default_context_size() {
-        base.agent.context_size = other.agent.context_size;
-    }
+    merge_agent(&mut base.agent, other.agent);
     if !other.tools.allowed_dirs.is_empty() {
         base.tools.allowed_dirs = other.tools.allowed_dirs;
     }
@@ -123,6 +112,13 @@ pub fn apply_env_overrides(cfg: &mut Config) {
 
     // Runtime tuning overrides (one env var per tunable).
     set_u32_env("LCODE_AGENT_TODO_NAG_AFTER_TURNS", &mut cfg.agent.todo_nag_after_turns);
+    set_u32_env("LCODE_AGENT_SELF_REVIEW_MAX_ROUNDS", &mut cfg.agent.self_review_max_rounds);
+    if let Ok(val) = std::env::var("LCODE_AGENT_TEST_UNTIL_GREEN") {
+        cfg.agent.test_until_green = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    if let Ok(val) = std::env::var("LCODE_AGENT_SELF_REVIEW") {
+        cfg.agent.self_review = val == "1" || val.eq_ignore_ascii_case("true");
+    }
     set_usize_env("LCODE_COMPACTION_AUTO_THRESHOLD", &mut cfg.compaction.auto_threshold);
     set_usize_env("LCODE_COMPACTION_KEEP_RECENT", &mut cfg.compaction.keep_recent);
     set_usize_env("LCODE_COMPACTION_SUMMARY_TAIL_CHARS", &mut cfg.compaction.summary_tail_chars);
@@ -192,6 +188,33 @@ fn set_usize_env(key: &str, target: &mut usize) {
         if let Ok(n) = val.parse() {
             *target = n;
         }
+    }
+}
+
+/// Merge `other` agent settings over `base` (same unset-does-not-stomp
+/// semantics as `merge_llm`).
+fn merge_agent(base: &mut AgentConfig, other: AgentConfig) {
+    if !other.system_prompt.is_empty() {
+        base.system_prompt = other.system_prompt;
+    }
+    if other.max_turns != default_max_turns() {
+        base.max_turns = other.max_turns;
+    }
+    if other.require_approval != default_require_approval() {
+        base.require_approval = other.require_approval;
+    }
+    if other.context_size != default_context_size() {
+        base.context_size = other.context_size;
+    }
+    // One-way merge (false wins), mirroring the internal no-thinking key.
+    if !other.test_until_green {
+        base.test_until_green = false;
+    }
+    if other.self_review {
+        base.self_review = true;
+    }
+    if other.self_review_max_rounds != settings::default_self_review_max_rounds() {
+        base.self_review_max_rounds = other.self_review_max_rounds;
     }
 }
 

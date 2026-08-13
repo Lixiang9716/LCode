@@ -184,6 +184,23 @@ pub struct AgentConfig {
     /// Turns without a todo update before the nag reminder fires (s03)
     #[serde(default = "default_todo_nag_after_turns")]
     pub todo_nag_after_turns: u32,
+
+    /// Inject a fix-and-rerun reminder after a failing test command
+    /// (cargo test/nextest, npm test, pytest, go test, ...). One-way
+    /// merge (false wins).
+    #[serde(default = "default_test_until_green")]
+    pub test_until_green: bool,
+
+    /// Run a self-review pass before finishing: the internal
+    /// (thinking-disabled) provider reviews the session and issues
+    /// restart the loop up to `self_review_max_rounds` times.
+    /// Off by default.
+    #[serde(default)]
+    pub self_review: bool,
+
+    /// Restart rounds allowed for self-review fixes.
+    #[serde(default = "default_self_review_max_rounds")]
+    pub self_review_max_rounds: u32,
 }
 
 impl Default for AgentConfig {
@@ -195,6 +212,9 @@ impl Default for AgentConfig {
             context_size: default_context_size(),
             skills_dir: None,
             todo_nag_after_turns: default_todo_nag_after_turns(),
+            test_until_green: default_test_until_green(),
+            self_review: false,
+            self_review_max_rounds: default_self_review_max_rounds(),
         }
     }
 }
@@ -330,6 +350,14 @@ pub fn default_context_size() -> usize {
 #[doc(hidden)]
 pub fn default_todo_nag_after_turns() -> u32 {
     3
+}
+#[doc(hidden)]
+pub fn default_test_until_green() -> bool {
+    true
+}
+#[doc(hidden)]
+pub fn default_self_review_max_rounds() -> u32 {
+    1
 }
 pub(super) fn default_true() -> bool {
     true

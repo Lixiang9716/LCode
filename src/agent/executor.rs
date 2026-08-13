@@ -85,6 +85,9 @@ pub struct Executor {
     pub(crate) internal_provider: Option<Box<dyn LlmProvider>>,
     /// Server-side web_search declaration (appended to the tool pool).
     pub(crate) web_search: Option<crate::llm::ServerToolSpec>,
+    /// A test command failed in the previous turn (test-until-green
+    /// reminder pending).
+    pub(crate) test_failed: bool,
     /// Whether the session ended via abort (e.g. max turns) instead
     /// of finishing normally; surfaced to the CLI for the exit code.
     pub(crate) aborted: bool,
@@ -121,6 +124,7 @@ impl Executor {
             tuning: session.tuning,
             internal_provider: session.internal_provider,
             web_search: session.web_search,
+            test_failed: false,
             aborted: false,
             last_turn: 0,
             last_usage: crate::llm::Usage::default(),
@@ -154,9 +158,11 @@ impl Executor {
 
         self.runtime.publish(AgentEvent::SessionStarted { task: task.to_string() });
 
-        let (aborted, turn, usage) = self.run_loop(&mut memory, max_turns, stream).await?;
+        let (aborted, total_turns, total_usage) =
+            self.run_with_review(task, planner, &mut memory, max_turns, stream).await?;
         self.aborted = aborted;
-        self.last_turn = turn;
+        self.aborted = aborted;
+        self.last_turn = total_turns;
 
         if !aborted {
             // G8: Stop hook (policy/observation at session end)
@@ -171,11 +177,11 @@ impl Executor {
             // G3 (s09): at session end, extract durable memories from the
             // conversation and consolidate the memory store. Their usage
             // accumulates into the session total (`last_usage`).
-            self.last_usage = usage;
+            self.last_usage = total_usage;
             self.persist_memories(&memory).await;
 
             self.runtime.publish(AgentEvent::TaskFinished {
-                turns: turn,
+                turns: total_turns,
                 prompt_tokens: self.last_usage.prompt_tokens,
                 completion_tokens: self.last_usage.completion_tokens,
             });
@@ -237,7 +243,7 @@ impl Executor {
 
     /// The main agent loop: turns of inject → compact → chat → handle
     /// until stop, abort or max turns. Returns (aborted, final turn).
-    async fn run_loop(
+    pub(crate) async fn run_loop(
         &mut self,
         memory: &mut ConversationMemory,
         max_turns: u32,
@@ -376,24 +382,25 @@ impl Executor {
             Some(Err(e)) => Err(e),
             None => self.registry.execute(tool_name, &parsed_args),
         };
-        match result {
-            Ok(result) => {
-                let result_str = format!("{}", result);
-                self.runtime.publish(AgentEvent::ToolCallExecuted {
-                    id: tool_call_id.to_string(),
-                    output: result_str.clone(),
-                });
-                memory.add_tool_result(result_str, tool_call_id.to_string());
-            }
-            Err(e) => {
-                let error_str = format!("Error executing tool: {}", e);
-                self.runtime.publish(AgentEvent::ToolCallFailed {
-                    id: tool_call_id.to_string(),
-                    error: error_str.clone(),
-                });
-                memory.add_tool_result(error_str, tool_call_id.to_string());
-            }
+        // One output string for the event and the conversation; P0
+        // test-until-green notes failing test commands below.
+        let (output, ok) = match result {
+            Ok(result) => (format!("{}", result), true),
+            Err(e) => (format!("Error executing tool: {}", e), false),
+        };
+        if ok {
+            self.runtime.publish(AgentEvent::ToolCallExecuted {
+                id: tool_call_id.to_string(),
+                output: output.clone(),
+            });
+        } else {
+            self.runtime.publish(AgentEvent::ToolCallFailed {
+                id: tool_call_id.to_string(),
+                error: output.clone(),
+            });
         }
+        memory.add_tool_result(output.clone(), tool_call_id.to_string());
+        self.note_shell_outcome(tool_name, &parsed_args, &output, ok);
 
         // PostToolUse hook (observability / policy follow-up)
         let post_ctx = HookContext {

@@ -48,6 +48,7 @@ mod planner;
 mod prompt;
 mod protocol;
 mod provider_build;
+mod quality;
 mod recorder;
 mod render;
 mod retry;

@@ -300,6 +300,12 @@ pub struct RuntimeTuning {
     pub budget_warning_ratio: f64,
     /// Model used for cost estimation (pricing tier lookup).
     pub cost_model: String,
+    /// Fix-and-rerun reminder after failing test commands.
+    pub test_until_green: bool,
+    /// Self-review pass before finishing.
+    pub self_review: bool,
+    /// Restart rounds allowed for self-review fixes.
+    pub self_review_max_rounds: u32,
 }
 
 impl RuntimeTuning {
@@ -319,6 +325,9 @@ impl RuntimeTuning {
             budget_total_usd: cfg.llm.budget_total_usd,
             budget_warning_ratio: cfg.llm.budget_warning_ratio,
             cost_model: cfg.llm.model.clone(),
+            test_until_green: cfg.agent.test_until_green,
+            self_review: cfg.agent.self_review,
+            self_review_max_rounds: cfg.agent.self_review_max_rounds,
         }
     }
 }
