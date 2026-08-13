@@ -14,8 +14,8 @@ pub fn is_http_url(path: &str) -> bool {
 }
 
 /// Extract `host[:port]` from an http(s) URL; `None` when the URL does
-/// not parse to a network location.
-fn host_of(url: &str) -> Option<String> {
+/// not parse to a network location. Shared with the shell guardrails.
+pub(crate) fn host_of(url: &str) -> Option<String> {
     let rest = url.trim_start_matches("https://").trim_start_matches("http://");
     let host = rest.split(['/', '?', '#']).next()?;
     let host = host.trim();
@@ -27,7 +27,8 @@ fn host_of(url: &str) -> Option<String> {
 }
 
 /// Does `host` match a policy entry (exact or `*.suffix` wildcard)?
-fn host_matches(host: &str, entry: &str) -> bool {
+/// Shared with the shell guardrails.
+pub(crate) fn host_matches(host: &str, entry: &str) -> bool {
     if let Some(suffix) = entry.strip_prefix("*.") {
         host == suffix || host.ends_with(&format!(".{suffix}"))
     } else {
@@ -54,24 +55,27 @@ fn fetcher() -> &'static std::sync::mpsc::SyncSender<FetchJob> {
         let (tx, rx) = std::sync::mpsc::sync_channel::<FetchJob>(8);
         std::thread::Builder::new()
             .name("lcode-fetcher".to_string())
-            .spawn(move || {
-                let client = reqwest::Client::builder()
-                    .connect_timeout(Duration::from_secs(30))
-                    .build()
-                    .expect("fetch client builds");
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("fetcher runtime builds");
-                for (url, timeout_secs, max_bytes, reply) in rx.iter() {
-                    let result =
-                        runtime.block_on(fetch_on_thread(&client, &url, timeout_secs, max_bytes));
-                    let _ = reply.send(result);
-                }
-            })
+            .spawn(move || fetcher_loop(rx))
             .expect("fetcher thread spawns");
         tx
     })
+}
+
+/// The fetcher thread body: one client, one runtime, jobs from the
+/// channel until the session drops the sender.
+fn fetcher_loop(rx: std::sync::mpsc::Receiver<FetchJob>) {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .expect("fetch client builds");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("fetcher runtime builds");
+    for (url, timeout_secs, max_bytes, reply) in rx.iter() {
+        let result = runtime.block_on(fetch_on_thread(&client, &url, timeout_secs, max_bytes));
+        let _ = reply.send(result);
+    }
 }
 
 /// The actual download, running on the fetcher thread (sync context).

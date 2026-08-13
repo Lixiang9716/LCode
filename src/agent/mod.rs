@@ -36,6 +36,7 @@ mod cron;
 mod event;
 mod executor;
 mod executor_hooks;
+pub mod guardrails;
 mod hooks;
 mod mcp;
 mod mcp_stdio;
@@ -173,6 +174,9 @@ fn build_session(
 
     let mut hooks_registry = HookRegistry::default();
     register_default_hooks(&mut hooks_registry);
+    // Shell guardrails: sensitive paths and denied hosts also gate the
+    // shell tool, so the context guardrails are not bypassable.
+    guardrails::register(&mut hooks_registry, config.tools.clone());
     let hooks = Arc::new(hooks_registry);
 
     let (runtime, events_rx, commands_tx) =

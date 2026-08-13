@@ -2,7 +2,7 @@
 //!
 //! Tools for searching codebases: grep (content search) and glob (filename search).
 
-use crate::config::Config;
+use crate::config::{Config, ToolsConfig};
 use crate::tools::{Tool, ToolResult};
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,18 +10,26 @@ use std::process::Command;
 /// Tool for searching file contents using grep-like functionality.
 pub struct GrepTool {
     workspace_root: PathBuf,
+    config: ToolsConfig,
 }
 
 impl GrepTool {
-    pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self { workspace_root: std::env::current_dir()? })
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
+        Ok(Self { workspace_root: std::env::current_dir()?, config: config.tools.clone() })
     }
 
     /// Create a tool rooted at `root` instead of the current directory.
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn new_with_root(root: PathBuf) -> Self {
-        Self { workspace_root: root }
+        Self { workspace_root: root, config: ToolsConfig::default() }
+    }
+
+    /// Create a tool rooted at `root` with explicit tool settings.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root_and_config(root: PathBuf, config: ToolsConfig) -> Self {
+        Self { workspace_root: root, config }
     }
 }
 
@@ -78,12 +86,27 @@ impl Tool for GrepTool {
             run_builtin_grep(pattern, &search_path, max_results)?
         };
 
-        if output.is_empty() {
-            return Ok(ToolResult::ok(format!("No matches found for '{}'", pattern)));
+        // Guardrails: drop matches inside sensitive paths, scrub detected
+        // secrets from the remaining lines — the same context gate that
+        // read_file applies.
+        let (filtered, hidden) = crate::tools::guard::filter_sensitive_lines(&output, &self.config);
+        if filtered.trim().is_empty() {
+            if hidden > 0 {
+                return Ok(ToolResult::ok(format!(
+                    "No matches found for '{pattern}' ({hidden} sensitive matches hidden)"
+                )));
+            }
+            return Ok(ToolResult::ok(format!("No matches found for '{pattern}'")));
         }
 
-        let lines: Vec<&str> = output.lines().collect();
-        Ok(ToolResult::ok(format!("Found {} matches for '{}':\n{}", lines.len(), pattern, output)))
+        let scrubbed = crate::tools::scrub::scrub_secrets(&filtered);
+        let lines = scrubbed.lines().count();
+        let note = if hidden > 0 {
+            format!("\n({hidden} sensitive matches hidden)")
+        } else {
+            String::new()
+        };
+        Ok(ToolResult::ok(format!("Found {lines} matches for '{pattern}':\n{scrubbed}{note}")))
     }
 }
 
@@ -140,18 +163,26 @@ fn run_builtin_grep(pattern: &str, path: &PathBuf, max_results: usize) -> anyhow
 /// Tool for finding files by glob pattern.
 pub struct GlobTool {
     workspace_root: PathBuf,
+    config: ToolsConfig,
 }
 
 impl GlobTool {
-    pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self { workspace_root: std::env::current_dir()? })
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
+        Ok(Self { workspace_root: std::env::current_dir()?, config: config.tools.clone() })
     }
 
     /// Create a tool rooted at `root` instead of the current directory.
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn new_with_root(root: PathBuf) -> Self {
-        Self { workspace_root: root }
+        Self { workspace_root: root, config: ToolsConfig::default() }
+    }
+
+    /// Create a tool rooted at `root` with explicit tool settings.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root_and_config(root: PathBuf, config: ToolsConfig) -> Self {
+        Self { workspace_root: root, config }
     }
 }
 
@@ -211,15 +242,31 @@ impl Tool for GlobTool {
             })
             .collect();
 
-        if matches.is_empty() {
-            return Ok(ToolResult::ok(format!("No files matching '{}'", pattern_str)));
+        // Guardrails: sensitive paths are not revealed by listing.
+        let (hidden_vec, visible): (Vec<String>, Vec<String>) = matches
+            .into_iter()
+            .partition(|m| crate::tools::scrub::is_sensitive_path(m, &self.config.sensitive_paths));
+        let hidden = hidden_vec.len();
+        if visible.is_empty() {
+            if hidden > 0 {
+                return Ok(ToolResult::ok(format!(
+                    "No files matching '{pattern_str}' ({hidden} sensitive matches hidden)"
+                )));
+            }
+            return Ok(ToolResult::ok(format!("No files matching '{pattern_str}'")));
         }
 
+        let note = if hidden > 0 {
+            format!("\n({hidden} sensitive matches hidden)")
+        } else {
+            String::new()
+        };
         Ok(ToolResult::ok(format!(
-            "Found {} files matching '{}':\n{}",
-            matches.len(),
+            "Found {} files matching '{}':\n{}{}",
+            visible.len(),
             pattern_str,
-            matches.join("\n")
+            visible.join("\n"),
+            note
         )))
     }
 }
