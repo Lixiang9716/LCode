@@ -183,6 +183,10 @@ fn landlock_restrict(workspace: &Path) -> Result<(), landlock::RulesetError> {
         .create()?
         .add_rules(path_beneath_rules(&["/"], ro))?
         .add_rules(path_beneath_rules(&[workspace, Path::new("/tmp")], AccessFs::from_all(abi)))?
+        // The device tree gets full access: many programs (git, shells)
+        // open /dev/null, /dev/zero or /dev/urandom at startup; device
+        // operations are not a filesystem escape surface.
+        .add_rules(path_beneath_rules(&["/dev"], AccessFs::from_all(abi)))?
         .restrict_self()
         .map(|_status| ())
 }

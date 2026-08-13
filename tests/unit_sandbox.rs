@@ -92,3 +92,18 @@ fn landlock_denies_writes_outside_workspace_when_enforced() {
     assert!(stdout.contains("DENIED"), "landlock must deny writes under /etc, got: {stdout}");
     let _ = tool; // the plain tool itself stays unsandboxed (default none)
 }
+
+#[test]
+fn landlock_allows_dev_null_when_enforced() {
+    if !sandbox::availability().landlock {
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut command = std::process::Command::new("sh");
+    let script = "echo x > /dev/null 2>/dev/null && echo DEV-OK";
+    command.arg("-c").arg(script).current_dir(dir.path());
+    sandbox::wrap(SandboxMode::Landlock, dir.path(), &mut command, script).unwrap();
+    let output = command.output().expect("probe runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("DEV-OK"), "git-style /dev/null access must work: {stdout}");
+}
