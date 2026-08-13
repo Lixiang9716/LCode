@@ -84,6 +84,18 @@ cargo fmt --check && echo FMT_OK
 2. 运行审批/hooks 相关测试：`cargo nextest run --test unit_wiring --test unit_event_publish` 通过数
 3. 记录 `src/agent/retry.rs` is_transient 特判列表（作为行为基线）
 
+## 一键运行（scripts/e2e-battery.sh）
+
+本协议已固化为脚本（`make e2e` 或 `scripts/e2e-battery.sh [out-dir]`）：
+- 离线维度恒跑：P1 冷构建（绊线 90s）、P2 二进制（绊线 10MB）、P3 启动（绊线 200ms）、
+  P4 测试套件（绊线 ≥500 通过）、clippy/fmt/style 门禁、P5 由 scrub 测试自身断言（<2s）
+- 真实 API 任务（T1-T4 + 均值轮次绊线 4.5）仅在 `LCODE_E2E_API_KEY` 设置时运行
+  （CI 为 repo secret `DEEPSEEK_API_KEY`）
+- 输出 JSON 报告（out-dir/report.json）+ PASS/FAIL 判决与退出码；夜间 CI
+  （.github/workflows/e2e-nightly.yml，UTC 02:00 + 手动触发）自动运行
+- 绊线是回归绊线而非实时保证：按 CI 共享 runner 标定，抓数量级退化
+  （见 perf-baseline.md 的 scrub 延迟教训）
+
 ## 输出格式（每个 agent 报告尾部，主 agent 直接收录）
 ```markdown
 ## [维度名] 结果

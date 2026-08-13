@@ -1,0 +1,40 @@
+name: E2E battery (nightly)
+
+on:
+  schedule:
+    # Daily at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  battery:
+    name: E2E battery (offline + optional real API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-battery
+          cache-on-failure: true
+          workspaces: . -> target
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Run the battery (real-API tasks when the secret is set)
+        env:
+          LCODE_E2E_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: scripts/e2e-battery.sh target/e2e-battery
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-battery-report
+          path: target/e2e-battery/
+          retention-days: 14
