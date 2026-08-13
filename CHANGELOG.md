@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/Lixiang9716/LCode/compare/v0.10.0...v0.11.0) (2026-08-13)
+
+
+### Features
+
+* add DeepSeek reasoning, prefix, web_search ([b8682b0](https://github.com/Lixiang9716/LCode/commit/b8682b0d28985b3f05d6dadcd8dae3750a13c3e1))
+* **agent:** built-in assets skill and resource-management docs ([bcd5cf5](https://github.com/Lixiang9716/LCode/commit/bcd5cf5d222c49a9fa8db7e0ac23a27218a51c2f))
+* **agent:** per-agent token usage aggregation ([62fdcbd](https://github.com/Lixiang9716/LCode/commit/62fdcbdc58087e6c6fe0216d228deef8db50bdd8))
+* **agent:** quality loop — test-until-green reminder and self-review ([67e1cd1](https://github.com/Lixiang9716/LCode/commit/67e1cd1415e1b668a70d68aaaff65775351839c0))
+* **assets:** lcode assets check — the convention enforcer ([177e135](https://github.com/Lixiang9716/LCode/commit/177e135d0decf56cef35081b7997fcfe28d6ffcd))
+* **cli:** lcode doctor and lcode events — operations tooling ([8cecfec](https://github.com/Lixiang9716/LCode/commit/8cecfec4cb25c41debf0e937acf7b64b72c3cd27))
+* **config:** SecretString for the LLM API key ([fefacaa](https://github.com/Lixiang9716/LCode/commit/fefacaa46c69856933a9a0d83d03a48db76394a1))
+* DeepSeek P0/P1 batch — reasoning effort, prefix completion, server-side web_search ([f0ff774](https://github.com/Lixiang9716/LCode/commit/f0ff774fd5e3b138fc1b33845dc6d5165ceb8d39))
+* **llm:** hard cost budget gate with one-shot warning ([218b2ea](https://github.com/Lixiang9716/LCode/commit/218b2ead4a0e8a835e0f44816de5a68a7c95786c))
+* **tools:** content filtering for read_file — sensitive paths, secrets, binary ([b8c5af5](https://github.com/Lixiang9716/LCode/commit/b8c5af53137614eaa19c74ae3115afc3e546177b))
+* **tools:** extend context guardrails to grep, glob and shell ([a590c91](https://github.com/Lixiang9716/LCode/commit/a590c911cce9caec8c4a1dbfeaa8a1f25a6f8cbb))
+* **tools:** shell sandbox — landlock, bwrap, docker tiers ([a617922](https://github.com/Lixiang9716/LCode/commit/a6179220e2446d93a1b4420757e2b919331abcf1))
+* **tools:** URL mode and permission checks for read_file/write_file ([3718246](https://github.com/Lixiang9716/LCode/commit/37182467ee1a80127d29b245b762476993e82a7a))
+
+
+### Bug Fixes
+
+* address 5-agent review findings for DeepSeek features ([b1f9dd4](https://github.com/Lixiang9716/LCode/commit/b1f9dd45b1b229bded7882fea02775cd18b3ef5f))
+* **agent:** print teammate usage after they wind down ([01b55e6](https://github.com/Lixiang9716/LCode/commit/01b55e66fa2f047a0e0e3397d19c9e80f1131935))
+* **tools:** enforce the shell timeout; assets check name consistency ([c29862d](https://github.com/Lixiang9716/LCode/commit/c29862d5adab09846cd66040201661cd1abd006e))
+* **tools:** grant /dev full access in the landlock ruleset ([dc6c085](https://github.com/Lixiang9716/LCode/commit/dc6c085eab37e8dd32aa43a99b198ab43a8cac1f))
+
+
+### Performance Improvements
+
+* **tools:** async client on the fetcher thread instead of reqwest blocking ([6a2241f](https://github.com/Lixiang9716/LCode/commit/6a2241f5919d524d86b361a9205d418f1606e96e))
+
 ## [0.10.0](https://github.com/Lixiang9716/LCode/compare/v0.9.1...v0.10.0) (2026-08-13)
 
 
