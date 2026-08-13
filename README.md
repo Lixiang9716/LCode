@@ -226,6 +226,12 @@ Each value can also be overridden per invocation via its `LCODE_*`
 environment variable, e.g. `LCODE_TEAM_IDLE_INTERVAL_SECS=2 lcode run ...`.
 See `src/config/mod.rs` (`apply_env_overrides`) for the full key list.
 
+## 🔬 DeepSeek API Report
+
+[`docs/deepseek-api-report.md`](docs/deepseek-api-report.md) — 对 DeepSeek API 的全面实测报告：
+7 维度约 100 次真实请求（参数矩阵 / 流式 / thinking / function calling / 缓存 / 双模型 / 错误路径），
+含 4 个 major 行为发现（默认思考模式、旧模型名降级、错误结构不统一、缓存匹配语义）与 LCode 集成结论。
+
 ## 🧪 Development
 
 ```bash
