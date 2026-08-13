@@ -80,6 +80,7 @@ fn executor_with_queue(
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
                 memory_store: None,
                 team_bus: None,
+                tuning: None,
             },
         ),
         call_count,

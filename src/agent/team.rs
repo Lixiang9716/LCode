@@ -363,6 +363,7 @@ pub fn register(
     workspace: &PathBuf,
     provider: Arc<dyn LlmProvider>,
     events: Option<broadcast::Sender<AgentEvent>>,
+    team_cfg: &crate::config::TeamConfig,
 ) {
     let mut bus = MessageBus::new(workspace);
     if let Some(tx) = &events {
@@ -396,8 +397,8 @@ pub fn register(
             protocol.clone(),
             tasks.clone(),
         ),
-        idle_interval: TEAMMATE_IDLE_INTERVAL,
-        idle_polls: TEAMMATE_IDLE_POLLS,
+        idle_interval: std::time::Duration::from_secs(team_cfg.idle_interval_secs),
+        idle_polls: team_cfg.idle_polls,
     };
     for kind in [TeamToolKind::Spawn, TeamToolKind::Send, TeamToolKind::Read, TeamToolKind::List] {
         registry.register(Box::new(TeamTool {

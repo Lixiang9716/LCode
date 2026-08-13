@@ -155,10 +155,11 @@ fn build_session(
     register_default_hooks(&mut hooks_registry);
     let hooks = Arc::new(hooks_registry);
 
-    let (runtime, events_rx, commands_tx) = AgentRuntime::new();
+    let (runtime, events_rx, commands_tx) =
+        AgentRuntime::with_capacity(config.events.channel_capacity, config.events.command_capacity);
 
     let workspace = std::env::current_dir()?;
-    let todo = Arc::new(Mutex::new(TodoManager::default()));
+    let todo = Arc::new(Mutex::new(TodoManager::with_max_items(config.todo.max_items)));
     todo::register(&mut registry, todo.clone(), Some(runtime.events_sender()));
 
     let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
@@ -174,7 +175,13 @@ fn build_session(
     // INTEGRATION POINT: teammate replies land in
     // `{workspace}/.team/inbox/lead.jsonl`; the executor's turn-start
     // should drain it via `MessageBus::drain_lead_inbox`.
-    team::register(&mut registry, &workspace, provider.clone(), Some(runtime.events_sender()));
+    team::register(
+        &mut registry,
+        &workspace,
+        provider.clone(),
+        Some(runtime.events_sender()),
+        &config.team,
+    );
     worktree::register(&mut registry, &workspace, Some(runtime.events_sender()));
 
     let cron = Arc::new(Mutex::new(CronScheduler::new(&workspace)));
@@ -182,7 +189,8 @@ fn build_session(
     let mcp_registry = Arc::new(Mutex::new(McpRegistry::default()));
     mcp::register(&mut registry, mcp_registry.clone());
     let _ = memory_store::register(&mut registry, &workspace, provider.clone());
-    let memory_store = Arc::new(crate::agent::MemoryStore::new(&workspace)?);
+    let memory_store =
+        Arc::new(crate::agent::MemoryStore::with_config(&workspace, &config.memory)?);
     let team_bus = Arc::new(crate::agent::MessageBus::new(&workspace));
 
     Ok((
@@ -254,6 +262,7 @@ pub async fn run_task_with_memory(
         subagent_registry,
         Some(hooks.clone()),
         Some(runtime.events_sender()),
+        config.subagent.clone(),
     );
 
     // Run the session: renderer + memory assembly + executor loop.
@@ -334,6 +343,7 @@ async fn execute_session(
         compact_request,
         memory_store: Some(memory_store),
         team_bus: Some(team_bus.clone()),
+        tuning: Some(Arc::new(crate::config::RuntimeTuning::from_config(config))),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
@@ -396,11 +406,12 @@ pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
         ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
         ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
     };
-    let retry = RetryProvider::with_fallback(
-        inner,
-        RetryPolicy::default(),
-        config.llm.fallback_model.clone(),
-    );
+    let policy = RetryPolicy {
+        max_attempts: config.retry.max_attempts,
+        base_delay_ms: config.retry.base_delay_ms,
+        max_delay_ms: config.retry.max_delay_ms,
+    };
+    let retry = RetryProvider::with_fallback(inner, policy, config.llm.fallback_model.clone());
     // Seed the retry budget (and thus the inner provider's request body)
     // with the configured max_tokens instead of the hardcoded default.
     retry.set_max_tokens(config.llm.max_tokens);

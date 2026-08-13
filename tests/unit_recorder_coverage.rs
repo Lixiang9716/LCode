@@ -231,6 +231,7 @@ async fn recorder_log_covers_every_session_event() {
         &workspace,
         provider.clone(),
         Some(runtime.events_sender()),
+        &Config::default().team,
     );
     lcode::agent::register_worktree_tools(&mut registry, &workspace, Some(runtime.events_sender()));
 
@@ -244,6 +245,7 @@ async fn recorder_log_covers_every_session_event() {
         sub_registry,
         None,
         Some(runtime.events_sender()),
+        lcode::config::SubagentConfig::default(),
     );
 
     let session = SessionState {
@@ -255,6 +257,7 @@ async fn recorder_log_covers_every_session_event() {
         compact_request,
         memory_store: Some(Arc::new(MemoryStore::new(&workspace).expect("memory store"))),
         team_bus: Some(Arc::new(MessageBus::new(&workspace))),
+        tuning: None,
     };
 
     let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);

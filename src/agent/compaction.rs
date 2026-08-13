@@ -20,11 +20,6 @@ pub const AUTO_COMPACT_THRESHOLD: usize = 50_000;
 pub const KEEP_RECENT: usize = 3;
 /// Tools whose results are never compacted (reference material).
 pub const PRESERVE_RESULT_TOOLS: &[&str] = &["read_file"];
-/// Char count of a result below which compaction is not worth it.
-const COMPACT_MIN_LEN: usize = 100;
-/// How many trailing characters of the serialized conversation are sent
-/// to the summarizer.
-const SUMMARY_TAIL_CHARS: usize = 80_000;
 
 /// Rough token estimate: characters / 4 (zero-dependency heuristic).
 pub fn estimate_tokens(text: &str) -> usize {
@@ -36,7 +31,11 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// Tool names are recovered by matching `tool_call_id` against the
 /// `tool_calls` recorded on assistant messages. Returns the number of
 /// results compacted.
-pub fn micro_compact(messages: &mut [ChatMessage], _provider: &dyn LlmProvider) -> usize {
+pub fn micro_compact(
+    messages: &mut [ChatMessage],
+    _provider: &dyn LlmProvider,
+    cfg: &crate::config::CompactionConfig,
+) -> usize {
     // Map tool_call_id -> tool name from prior assistant messages.
     let mut tool_names: HashMap<String, String> = HashMap::new();
     for msg in messages.iter() {
@@ -52,8 +51,8 @@ pub fn micro_compact(messages: &mut [ChatMessage], _provider: &dyn LlmProvider) 
     let results: Vec<usize> =
         messages.iter().enumerate().filter(|(_, m)| m.role == Role::Tool).map(|(i, _)| i).collect();
     let mut compacted = 0;
-    for &idx in &results[..results.len().saturating_sub(KEEP_RECENT)] {
-        if messages[idx].content.len() <= COMPACT_MIN_LEN {
+    for &idx in &results[..results.len().saturating_sub(cfg.keep_recent)] {
+        if messages[idx].content.len() <= cfg.min_len {
             continue;
         }
         let tool_name = messages[idx]
@@ -84,6 +83,7 @@ pub async fn auto_compact(
     provider: &dyn LlmProvider,
     focus: Option<&str>,
     workspace: &Path,
+    cfg: &crate::config::CompactionConfig,
 ) -> anyhow::Result<String> {
     // 1. Persist the full transcript as JSONL under `.transcripts/`.
     let transcripts_dir = workspace.join(".transcripts");
@@ -118,7 +118,7 @@ pub async fn auto_compact(
         prompt.push_str(&format!(" Pay special attention to preserving details about: {}.", f));
     }
     let serialized = serde_json::to_string(messages)?;
-    let tail_start = serialized.len().saturating_sub(SUMMARY_TAIL_CHARS);
+    let tail_start = serialized.len().saturating_sub(cfg.summary_tail_chars);
     prompt.push_str("\n\n");
     prompt.push_str(&serialized[tail_start..]);
     let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;

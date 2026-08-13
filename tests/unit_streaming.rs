@@ -67,6 +67,7 @@ fn streaming_executor() -> (Executor, tokio::sync::broadcast::Receiver<AgentEven
                 compact_request: Arc::new(std::sync::Mutex::new(None)),
                 memory_store: None,
                 team_bus: None,
+                tuning: None,
             },
         ),
         events_rx,
@@ -138,6 +139,7 @@ async fn test_non_streaming_run_does_not_call_chat_stream() {
             compact_request: Arc::new(std::sync::Mutex::new(None)),
             memory_store: None,
             team_bus: None,
+            tuning: None,
         },
     );
 
@@ -218,6 +220,7 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
             compact_request: Arc::new(std::sync::Mutex::new(None)),
             memory_store: None,
             team_bus: None,
+            tuning: None,
         },
     );
 

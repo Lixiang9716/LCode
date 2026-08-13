@@ -84,7 +84,11 @@ fn test_micro_compact_replaces_old_large_results() {
     assert_eq!(PRESERVE_RESULT_TOOLS, &["read_file"]);
 
     let mut messages = conversation();
-    let compacted = micro_compact(&mut messages, &MockLlmProvider::new());
+    let compacted = micro_compact(
+        &mut messages,
+        &MockLlmProvider::new(),
+        &lcode::config::CompactionConfig::default(),
+    );
 
     assert_eq!(compacted, 1);
     // bash result replaced with a placeholder naming the tool.
@@ -103,7 +107,11 @@ fn test_micro_compact_skips_small_results() {
     messages[1].content = "short".to_string();
     messages[2].content = "tiny".to_string();
 
-    let compacted = micro_compact(&mut messages, &MockLlmProvider::new());
+    let compacted = micro_compact(
+        &mut messages,
+        &MockLlmProvider::new(),
+        &lcode::config::CompactionConfig::default(),
+    );
 
     assert_eq!(compacted, 0);
     assert_eq!(messages[1].content, "short");
@@ -114,7 +122,14 @@ fn test_micro_compact_skips_small_results() {
 fn test_micro_compact_keeps_recent_results() {
     let mut messages: Vec<ChatMessage> = conversation().into_iter().take(KEEP_RECENT + 1).collect();
 
-    assert_eq!(micro_compact(&mut messages, &MockLlmProvider::new()), 0);
+    assert_eq!(
+        micro_compact(
+            &mut messages,
+            &MockLlmProvider::new(),
+            &lcode::config::CompactionConfig::default()
+        ),
+        0
+    );
     assert_eq!(messages[1].content.len(), 500);
 }
 
@@ -123,7 +138,11 @@ fn test_micro_compact_unknown_tool_id_uses_unknown() {
     let mut messages = conversation();
     messages[1].tool_call_id = Some("missing-id".to_string());
 
-    let compacted = micro_compact(&mut messages, &MockLlmProvider::new());
+    let compacted = micro_compact(
+        &mut messages,
+        &MockLlmProvider::new(),
+        &lcode::config::CompactionConfig::default(),
+    );
 
     assert_eq!(compacted, 1);
     assert_eq!(messages[1].content, "[Previous: used unknown]");
@@ -143,7 +162,11 @@ fn test_micro_compact_results_without_tool_id_are_compacted() {
     ];
     messages[2].tool_call_id = None;
 
-    let compacted = micro_compact(&mut messages, &MockLlmProvider::new());
+    let compacted = micro_compact(
+        &mut messages,
+        &MockLlmProvider::new(),
+        &lcode::config::CompactionConfig::default(),
+    );
 
     assert_eq!(compacted, 2);
     assert_eq!(messages[1].content, "[Previous: used unknown]");
@@ -169,7 +192,15 @@ async fn test_auto_compact_writes_transcript_and_replaces_history() {
     });
 
     let mut messages = vec![ChatMessage::user("hello there"), ChatMessage::assistant("hi")];
-    let summary = auto_compact(&mut messages, &mock, None, tmp.path()).await.unwrap();
+    let summary = auto_compact(
+        &mut messages,
+        &mock,
+        None,
+        tmp.path(),
+        &lcode::config::CompactionConfig::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(summary, "mock summary");
     // History replaced by a single marker user message carrying BOTH the
@@ -206,7 +237,15 @@ async fn test_auto_compact_focus_is_preserved_in_prompt() {
     });
 
     let mut messages = vec![ChatMessage::user("hi")];
-    let _ = auto_compact(&mut messages, &mock, Some("auth flow"), tmp.path()).await.unwrap();
+    let _ = auto_compact(
+        &mut messages,
+        &mock,
+        Some("auth flow"),
+        tmp.path(),
+        &lcode::config::CompactionConfig::default(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -216,7 +255,15 @@ async fn test_auto_compact_falls_back_when_summary_empty() {
     mock.expect_chat().returning(|_, _| Ok(summary_response("   \n ")));
 
     let mut messages = vec![ChatMessage::user("hi")];
-    let summary = auto_compact(&mut messages, &mock, None, tmp.path()).await.unwrap();
+    let summary = auto_compact(
+        &mut messages,
+        &mock,
+        None,
+        tmp.path(),
+        &lcode::config::CompactionConfig::default(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(summary, "No summary generated.");
 }
@@ -232,7 +279,15 @@ async fn test_auto_compact_truncates_long_conversations() {
     });
 
     let mut messages = vec![ChatMessage::user(big(200_000))];
-    let _ = auto_compact(&mut messages, &mock, None, tmp.path()).await.unwrap();
+    let _ = auto_compact(
+        &mut messages,
+        &mock,
+        None,
+        tmp.path(),
+        &lcode::config::CompactionConfig::default(),
+    )
+    .await
+    .unwrap();
 }
 
 // --- The compact tool ---

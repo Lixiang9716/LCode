@@ -116,6 +116,7 @@ async fn subagent_publishes_spawned_and_completed() {
         30,
         None,
         Some(tx.clone()),
+        &lcode::config::SubagentConfig::default(),
     )
     .await
     .expect("subagent runs");

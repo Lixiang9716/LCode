@@ -63,6 +63,7 @@ fn base_session(tmp: &TempDir) -> SessionState {
         compact_request: Arc::new(Mutex::new(None)),
         memory_store: None,
         team_bus: None,
+        tuning: None,
     }
 }
 

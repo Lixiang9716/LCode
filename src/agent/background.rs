@@ -15,10 +15,6 @@ use tokio::sync::broadcast;
 
 /// Length of the short task id returned to the caller.
 const ID_LEN: usize = 8;
-/// Default timeout for background commands, in seconds.
-const DEFAULT_TIMEOUT_SECS: u64 = 300;
-/// Maximum length of the stored result.
-const MAX_RESULT_CHARS: usize = 50_000;
 /// Command preview length in completion notifications.
 const NOTIF_COMMAND_CHARS: usize = 80;
 /// Result preview length in completion notifications.
@@ -77,6 +73,10 @@ pub struct BackgroundManager {
     events: Option<broadcast::Sender<AgentEvent>>,
     /// Shell safety policy used to validate commands before spawning.
     shell: Option<ShellTool>,
+    /// Default command timeout (seconds).
+    default_timeout_secs: u64,
+    /// Result characters kept per completed task.
+    max_result_chars: usize,
 }
 
 impl BackgroundManager {
@@ -88,6 +88,8 @@ impl BackgroundManager {
             notifications: Mutex::new(Vec::new()),
             events: None,
             shell: Some(ShellTool::new(config)?),
+            default_timeout_secs: config.background.default_timeout_secs,
+            max_result_chars: config.background.max_result_chars,
         })
     }
 
@@ -128,7 +130,7 @@ impl BackgroundManager {
         let command = command.to_string();
         let spawned_id = id.clone();
         handle.spawn(async move {
-            let (status, result) = run_command(&command, timeout_secs).await;
+            let (status, result) = run_command(&command, timeout_secs, me.max_result_chars).await;
             me.complete(spawned_id, command, status, result);
         });
 
@@ -254,7 +256,11 @@ fn fallback_safety_check(command: &str) -> anyhow::Result<()> {
 
 /// Execute a command with `sh -c`, capturing stdout + stderr (truncated
 /// to 50k chars), with a timeout that kills the child.
-async fn run_command(command: &str, timeout_secs: u64) -> (BackgroundStatus, String) {
+async fn run_command(
+    command: &str,
+    timeout_secs: u64,
+    max_result_chars: usize,
+) -> (BackgroundStatus, String) {
     let mut child = match tokio::process::Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -284,7 +290,7 @@ async fn run_command(command: &str, timeout_secs: u64) -> (BackgroundStatus, Str
             let result = if trimmed.is_empty() {
                 "(no output)".to_string()
             } else {
-                truncate_chars(trimmed, MAX_RESULT_CHARS).to_string()
+                truncate_chars(trimmed, max_result_chars).to_string()
             };
             (BackgroundStatus::Completed, result)
         }
@@ -351,7 +357,8 @@ impl Tool for BackgroundRunTool {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
-        let timeout_secs = args["timeout"].as_u64().unwrap_or(DEFAULT_TIMEOUT_SECS).min(300);
+        let timeout_secs =
+            args["timeout"].as_u64().unwrap_or(self.manager.default_timeout_secs).min(300);
         match self.manager.spawn(command, timeout_secs) {
             Ok(id) => Ok(ToolResult::ok(format!(
                 "Background task {id} started: {}",

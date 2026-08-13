@@ -239,6 +239,7 @@ fn register_wires_events_to_send_and_spawn() {
         &ws,
         std::sync::Arc::new(MockLlmProvider::new()),
         Some(tx),
+        &lcode::config::TeamConfig::default(),
     );
 
     // send_message publishes TeamMessageSent.
@@ -282,6 +283,7 @@ fn register_without_events_still_registers_tools() {
         &ws,
         std::sync::Arc::new(MockLlmProvider::new()),
         None,
+        &lcode::config::TeamConfig::default(),
     );
     for tool in ["spawn_teammate", "send_message", "read_inbox", "list_teammates"] {
         assert!(registry.list_tools().contains(&tool), "{tool} must be registered");

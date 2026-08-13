@@ -157,6 +157,75 @@ Configuration is loaded from (in order of precedence):
 
 See `lcode config list` for all available settings.
 
+### Runtime tuning (`config.toml`)
+
+Every previously hardcoded runtime parameter is configurable. The
+defaults match the pre-configuration behavior; a full example:
+
+```toml
+[llm]
+provider = "deepseek"          # openai / anthropic / deepseek / kimi / minimax / glm
+api_key = "sk-..."
+model = "deepseek-chat"
+max_tokens = 8192
+temperature = 0.3
+fallback_model = ""            # optional failover model
+
+[agent]
+system_prompt = "You are LCode, an expert software engineer..."
+max_turns = 100
+require_approval = true
+context_size = 128000
+skills_dir = "skills"          # optional; defaults to <workspace>/skills
+todo_nag_after_turns = 3       # turns without a todo update before the reminder
+
+[compaction]
+auto_threshold = 50000         # token budget before auto-compact
+keep_recent = 3                # recent messages kept verbatim by micro-compaction
+summary_tail_chars = 80000     # conversation tail fed to the summarizer
+min_len = 100                  # skip compaction below this history length
+
+[team]
+work_turns = 50                # max LLM turns per teammate WORK phase
+idle_interval_secs = 5         # seconds between IDLE polls
+idle_polls = 12                # empty polls before auto-shutdown
+
+[subagent]
+max_turns = 30
+max_tool_result_chars = 50000
+
+[memory]
+consolidate_threshold = 10     # files before consolidation kicks in
+max_relevant = 5               # memories injected into the system prompt
+max_extract_chars = 4000       # dialogue characters fed to extraction
+
+[background]
+default_timeout_secs = 300
+max_result_chars = 50000
+
+[retry]
+max_attempts = 5
+base_delay_ms = 500
+max_delay_ms = 30000
+
+[events]
+channel_capacity = 256         # broadcast event buffer
+command_capacity = 64          # command channel buffer
+
+[todo]
+max_items = 20
+
+[tools]
+allowed_dirs = []
+allowed_commands = []
+denied_commands = ["rm -rf /", "sudo", "chmod 777", "mkfs"]
+enable_web = true
+```
+
+Each value can also be overridden per invocation via its `LCODE_*`
+environment variable, e.g. `LCODE_TEAM_IDLE_INTERVAL_SECS=2 lcode run ...`.
+See `src/config/mod.rs` (`apply_env_overrides`) for the full key list.
+
 ## 🧪 Development
 
 ```bash

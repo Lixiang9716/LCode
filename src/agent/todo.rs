@@ -7,9 +7,6 @@
 use crate::tools::{Tool, ToolResult};
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of todo items the model may track at once.
-const MAX_TODOS: usize = 20;
-
 /// A single todo item.
 ///
 /// Ids are assigned by the manager on every update (the Nth item in the
@@ -35,7 +32,7 @@ pub enum TodoStatus {
 
 /// The todo manager holds the model-owned plan and renders it back to the
 /// model on every update (state echo).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TodoManager {
     items: Vec<TodoItem>,
     /// The current agent turn, recorded by the executor each loop
@@ -43,9 +40,27 @@ pub struct TodoManager {
     current_turn: u32,
     /// The turn in which the list was last updated, if ever.
     last_update_turn: Option<u32>,
+    /// Maximum tracked items (user-tunable).
+    max_items: usize,
+}
+
+impl Default for TodoManager {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            current_turn: 0,
+            last_update_turn: None,
+            max_items: crate::config::TodoConfig::default().max_items,
+        }
+    }
 }
 
 impl TodoManager {
+    /// Create a manager with a user-tunable item limit.
+    pub fn with_max_items(max_items: usize) -> Self {
+        Self { max_items, ..Self::default() }
+    }
+
     /// Replace the whole list with the given items.
     ///
     /// Constraints (matching the s03 reference): at most `MAX_TODOS`
@@ -53,8 +68,8 @@ impl TodoManager {
     /// `in_progress`. On success the manager assigns positional ids
     /// (1-based) and records the current turn as the last-update turn.
     pub fn update(&mut self, items: Vec<TodoItem>) -> anyhow::Result<()> {
-        if items.len() > MAX_TODOS {
-            anyhow::bail!("Max {MAX_TODOS} todos allowed");
+        if items.len() > self.max_items {
+            anyhow::bail!("Max {} todos allowed", self.max_items);
         }
         let mut validated = Vec::with_capacity(items.len());
         let mut in_progress = 0usize;
