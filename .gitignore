@@ -26,3 +26,4 @@ ehthumbs.db
 # Test artifacts
 .transcripts/
 *.transcript.jsonl
+.zcode/
