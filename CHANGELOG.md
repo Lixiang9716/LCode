@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/Lixiang9716/LCode/compare/v0.8.0...v0.9.0) (2026-08-13)
+
+
+### Features
+
+* **agent:** persist every agent event as JSONL audit log ([5363a0f](https://github.com/Lixiang9716/LCode/commit/5363a0f6e0fe6b8845688f2865f06553f349061c))
+* **agent:** publish each streamed delta as a TextDelta event ([5878aa0](https://github.com/Lixiang9716/LCode/commit/5878aa0a60bcf71be3cb4392f48e03b3ef36ba09))
+* complete learn-claude-code consistency (G1-G14) ([f891b3f](https://github.com/Lixiang9716/LCode/commit/f891b3f1dcb94602b409dfc109b9e3c33d927e94))
+* **config:** make every hardcoded runtime value user-tunable ([e173b04](https://github.com/Lixiang9716/LCode/commit/e173b049844c4683eba9f9a8404f926795ca4957))
+* **config:** make every hardcoded runtime value user-tunable ([ef008fc](https://github.com/Lixiang9716/LCode/commit/ef008fc7f65d0fc4cad5adeeedf805089883d382))
+* wire memory injection and lead inbox drain into executor ([e39c734](https://github.com/Lixiang9716/LCode/commit/e39c7346f535108d35eee6ea44e58bac63ad7b8f))
+
+
+### Bug Fixes
+
+* **agent:** blockable read_inbox and session-end teammate shutdown ([d514dbd](https://github.com/Lixiang9716/LCode/commit/d514dbd24f62ab28da486b328b9fb7b3c36a3711))
+* **agent:** compaction summarizes instead of echoing instructions ([4a9bc7f](https://github.com/Lixiang9716/LCode/commit/4a9bc7fecfc4bb92fc715398431a24764d93f9d6))
+* **agent:** publish the six events that had no publisher ([ffb6351](https://github.com/Lixiang9716/LCode/commit/ffb635163a61a72323007c0e38ad6d17f85edd40))
+* **agent:** release event bus so lcode exits after tasks ([0192ed2](https://github.com/Lixiang9716/LCode/commit/0192ed2a21331df2221c2bbc02c80f20f526bdca))
+* close final consistency gaps ([99b7810](https://github.com/Lixiang9716/LCode/commit/99b7810df3635358f387c1b955eab0497c38773b))
+* **llm:** merge parallel tool results into one Anthropic user message ([c4b2b2a](https://github.com/Lixiang9716/LCode/commit/c4b2b2a7f2788a23f75940bedfc95988a99a6e58))
+* **llm:** stream sentinels must not overwrite the finish reason ([e0ab75c](https://github.com/Lixiang9716/LCode/commit/e0ab75cc51fed27148c1e9cc5afc0784ea467590))
+* **repl:** approval flag was inverted; retry intermittent wire 400 ([ab5a1bf](https://github.com/Lixiang9716/LCode/commit/ab5a1bff5980d7713be26380641365a8e4f5284d))
+
 ## [0.8.0](https://github.com/Lixiang9716/LCode/compare/v0.7.0...v0.8.0) (2026-08-12)
 
 
