@@ -100,8 +100,9 @@ fn render_capability_event(event: &AgentEvent) {
         AgentEvent::SubagentSpawned { prompt, .. } => {
             println!("\n🧵 Subagent spawned: {}", truncate(prompt, 100));
         }
-        AgentEvent::SubagentCompleted { summary, .. } => {
+        AgentEvent::SubagentCompleted { summary, usage, .. } => {
             println!("\n🧵 Subagent finished: {}", truncate(summary, 200));
+            print_subagent_usage(usage);
         }
         AgentEvent::BackgroundTaskStarted { id, command } => {
             println!("\n🔄 Background started [{}]: {}", id, truncate(command, 80));
@@ -165,6 +166,13 @@ pub fn spawn_renderer(
             }
         }
     })
+}
+
+/// Print the subagent's token usage line (per-agent aggregation).
+fn print_subagent_usage(usage: &crate::llm::Usage) {
+    let tokens = usage.prompt_tokens + usage.completion_tokens;
+    let cost = crate::llm::format_cost(crate::llm::estimate_cost("", usage));
+    println!("   📊 {tokens} tokens ≈ {cost}");
 }
 
 /// Close the typewriter line when a run of streamed deltas ends.

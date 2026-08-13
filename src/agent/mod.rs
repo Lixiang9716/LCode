@@ -56,6 +56,7 @@ mod task;
 mod team;
 mod teammate;
 mod todo;
+mod usage_tracking;
 mod worktree;
 
 pub use background::{
@@ -372,6 +373,7 @@ async fn execute_session(
     if !executor.aborted {
         let usage = executor.last_usage.clone();
         executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
+            agent: "lead".to_string(),
             model: config.llm.model.clone(),
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
@@ -388,9 +390,43 @@ async fn execute_session(
     // observes the channel close (the process hangs for minutes).
     team_bus.shutdown();
 
+    // Per-agent usage: teammate loops persist their running totals to
+    // `.team/usage.jsonl`; surface them next to the lead's summary.
+    print_team_usage(&workspace, &config.llm.model);
+
     let _ = renderer.await;
     let _ = recorder.await;
     Ok(outcome)
+}
+
+/// Print one usage line per teammate from `.team/usage.jsonl` (best
+/// effort: a teammate may still be working its final turn).
+fn print_team_usage(workspace: &std::path::Path, model: &str) {
+    let path = workspace.join(".team").join("usage.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let usage = crate::llm::Usage {
+            prompt_tokens: value["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            completion_tokens: value["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: value["prompt_tokens"].as_u64().unwrap_or(0) as u32
+                + value["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_hit_tokens: value["cache_hit_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_miss_tokens: value["cache_miss_tokens"].as_u64().unwrap_or(0) as u32,
+            reasoning_tokens: value["reasoning_tokens"].as_u64().unwrap_or(0) as u32,
+        };
+        let agent = value["agent"].as_str().unwrap_or("teammate");
+        println!(
+            "👥 {}: {} tokens ≈ {}",
+            agent,
+            usage.prompt_tokens + usage.completion_tokens,
+            crate::llm::format_cost(crate::llm::estimate_cost(model, &usage))
+        );
+    }
 }
 
 /// Kind of LLM backend a provider alias resolves to.

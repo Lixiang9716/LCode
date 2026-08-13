@@ -38,8 +38,7 @@ enum IdleEnd {
     Timeout,
 }
 
-/// Shared runtime environment for a teammate loop: the LLM provider, the
-/// message bus, protocol state, task board, and tool subset.
+/// Shared runtime environment for a teammate loop.
 #[derive(Clone)]
 pub struct TeammateEnv {
     pub team_dir: PathBuf,
@@ -50,7 +49,7 @@ pub struct TeammateEnv {
     pub tools: TeammateTools,
     /// Poll interval for the IDLE phase (default 5s).
     pub idle_interval: std::time::Duration,
-    /// Number of empty IDLE polls before auto-shutdown (default 12 = 60s).
+    /// Empty IDLE polls before auto-shutdown.
     pub idle_polls: u32,
 }
 
@@ -107,29 +106,22 @@ impl TeammateTools {
     /// Tool definitions exposed to the teammate's LLM.
     pub fn definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         let mut defs = Vec::with_capacity(7);
+        let cmd = serde_json::json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] });
+        defs.push(teammate_tool("bash", "Run a shell command in the workspace.", cmd));
         defs.push(teammate_tool(
-            "bash",
-            "Run a shell command in the workspace.",
-            serde_json::json!({ "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] }),
-        ));
-        defs.push(teammate_tool(
-            "read_file",
-            "Read a file with line numbers.",
+            "read_file", "Read a file with line numbers.",
             serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "limit": { "type": "integer" } }, "required": ["path"] }),
         ));
         defs.push(teammate_tool(
-            "write_file",
-            "Write content to a file.",
+            "write_file", "Write content to a file.",
             serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" }, "content": { "type": "string" } }, "required": ["path", "content"] }),
         ));
         defs.push(teammate_tool(
-            "send_message",
-            "Send a message to another agent's inbox (e.g. to 'lead').",
+            "send_message", "Send a message to another agent's inbox.",
             serde_json::json!({ "type": "object", "properties": { "to": { "type": "string" }, "msg_type": { "type": "string" }, "request_id": { "type": "string" }, "content": { "type": "string" } }, "required": ["to", "content"] }),
         ));
         defs.push(teammate_tool(
-            "submit_plan",
-            "Submit a plan to the lead for approval.",
+            "submit_plan", "Submit a plan to the lead for approval.",
             serde_json::json!({ "type": "object", "properties": { "plan": { "type": "string" } }, "required": ["plan"] }),
         ));
         defs.push(teammate_tool(
@@ -138,8 +130,7 @@ impl TeammateTools {
             serde_json::json!({ "type": "object", "properties": {} }),
         ));
         defs.push(teammate_tool(
-            "task_claim",
-            "Claim a pending task for yourself.",
+            "task_claim", "Claim a pending task for yourself.",
             serde_json::json!({ "type": "object", "properties": { "id": { "type": "integer" }, "owner": { "type": "string" } }, "required": ["id"] }),
         ));
         defs
@@ -195,31 +186,33 @@ fn teammate_tool(
     }
 }
 
-/// Run a teammate loop (WORK/IDLE cycle). The basic echo loop is used when
-/// no LLM provider is available.
+/// Run a teammate loop (WORK/IDLE cycle; basic echo loop without an
+/// LLM provider).
 pub async fn run_teammate_loop(name: String, role: String, env: TeammateEnv) {
     if env.provider.is_none() {
         run_teammate_loop_basic(name, env.team_dir.clone(), env.bus.clone()).await;
         return;
     }
-    let mut messages: Vec<ChatMessage> = vec![
-        ChatMessage::system(format!(
-            "You are '{name}', a {role}. Use tools to complete tasks. You can \
-             list and claim tasks from the board. Check inbox for protocol \
-             messages. Send results to 'lead' via send_message."
-        )),
-        ChatMessage::user(format!(
-            "You are '{name}', a {role}. Check your inbox and the task board, \
-             then work until asked to shut down."
-        )),
-    ];
+    let system = format!(
+        "You are '{name}', a {role}. Use tools to complete tasks, list and \
+         claim tasks from the board, check inbox for protocol messages, \
+         and send results to 'lead' via send_message."
+    );
+    let user = format!(
+        "You are '{name}', a {role}. Check your inbox and the task board, \
+         then work until asked to shut down."
+    );
+    let mut messages: Vec<ChatMessage> = vec![ChatMessage::system(system), ChatMessage::user(user)];
     let mut last_len = messages.len();
     let mut wake = true;
+    let mut total_usage = crate::llm::Usage::default();
     loop {
         reinject_identity(&mut messages, &name, &role, last_len);
         last_len = messages.len();
         set_member_state(&env.team_dir, &name, TeammateState::Working);
-        if matches!(work_phase(&name, &env, &mut messages, wake).await, WorkEnd::Shutdown) {
+        let worked = work_phase(&name, &env, &mut messages, wake, &mut total_usage).await;
+        crate::agent::usage_tracking::record_agent_usage(&env.team_dir, &name, &total_usage);
+        if matches!(worked, WorkEnd::Shutdown) {
             break;
         }
         wake = match idle_phase(&name, &env, &mut messages).await {
@@ -227,6 +220,7 @@ pub async fn run_teammate_loop(name: String, role: String, env: TeammateEnv) {
             IdleEnd::Shutdown | IdleEnd::Timeout => break,
         };
     }
+    crate::agent::usage_tracking::record_agent_usage(&env.team_dir, &name, &total_usage);
     set_member_state(&env.team_dir, &name, TeammateState::Shutdown);
 }
 
@@ -237,10 +231,10 @@ async fn work_phase(
     env: &TeammateEnv,
     messages: &mut Vec<ChatMessage>,
     mut wake: bool,
+    total_usage: &mut crate::llm::Usage,
 ) -> WorkEnd {
     let mut worked = false;
     for _ in 0..TEAMMATE_WORK_TURNS {
-        // Session end stops the loop promptly (the bus must close).
         if env.bus.is_shutdown() {
             return WorkEnd::Shutdown;
         }
@@ -251,7 +245,9 @@ async fn work_phase(
         if !injected && !worked && !wake {
             return WorkEnd::Idle;
         }
-        if teammate_llm_turn(name, env, messages).await {
+        let (did_work, usage) = teammate_llm_turn(name, env, messages).await;
+        crate::agent::usage_tracking::accumulate_usage(total_usage, &usage);
+        if did_work {
             worked = true;
             wake = false;
         } else {
@@ -320,18 +316,23 @@ fn inject_inbox(name: &str, env: &TeammateEnv, messages: &mut Vec<ChatMessage>) 
 /// Run one LLM turn: chat, record the assistant message, execute any tool
 /// calls (results backfilled as tool messages). Returns true when the
 /// model asked for tools (loop keeps working), false when it stopped.
-async fn teammate_llm_turn(name: &str, env: &TeammateEnv, messages: &mut Vec<ChatMessage>) -> bool {
+async fn teammate_llm_turn(
+    name: &str,
+    env: &TeammateEnv,
+    messages: &mut Vec<ChatMessage>,
+) -> (bool, crate::llm::Usage) {
     let provider = match &env.provider {
         Some(provider) => provider.clone(),
-        None => return false,
+        None => return (false, crate::llm::Usage::default()),
     };
     let response = match provider.chat(messages, &env.tools.definitions()).await {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(teammate = name, %error, "teammate LLM call failed");
-            return false;
+            return (false, crate::llm::Usage::default());
         }
     };
+    let usage = response.usage.clone();
     messages.push(ChatMessage {
         role: Role::Assistant,
         content: response.content.clone(),
@@ -339,7 +340,7 @@ async fn teammate_llm_turn(name: &str, env: &TeammateEnv, messages: &mut Vec<Cha
         tool_calls: response.tool_calls.clone(),
     });
     let Some(calls) = response.tool_calls else {
-        return false; // stop_reason != tool_use -> IDLE
+        return (false, usage); // stop_reason != tool_use -> IDLE
     };
     for call in calls {
         let mut args: serde_json::Value = serde_json::from_str(&call.function.arguments)
@@ -357,7 +358,7 @@ async fn teammate_llm_turn(name: &str, env: &TeammateEnv, messages: &mut Vec<Cha
         };
         messages.push(ChatMessage::tool(output, call.id.clone()));
     }
-    true
+    (true, usage)
 }
 
 /// Scan the task board for an unclaimed task and claim it atomically
@@ -387,8 +388,7 @@ fn send_idle_summary(name: &str, env: &TeammateEnv, messages: &[ChatMessage]) {
 }
 
 /// s17 identity re-injection: when the message list shrank (context
-/// compression) or is still tiny, re-insert the `<identity>` message so
-/// the model remembers who it is. Never duplicates an existing identity.
+/// compression), re-insert the `<identity>` message.
 pub fn reinject_identity(messages: &mut Vec<ChatMessage>, name: &str, role: &str, last_len: usize) {
     let shrank = messages.len() < last_len;
     let tiny = messages.len() <= 3;
