@@ -199,6 +199,33 @@ pub struct ToolsConfig {
     /// Enable web fetch/search tools
     #[serde(default = "default_true")]
     pub enable_web: bool,
+
+    /// Hard cap for a single URL fetch (read_file/write_file URL mode);
+    /// the download aborts and cleans up when exceeded.
+    #[serde(default = "default_max_fetch_bytes")]
+    pub max_fetch_bytes: usize,
+
+    /// Total timeout for one URL fetch, seconds.
+    #[serde(default = "default_fetch_timeout_secs")]
+    pub fetch_timeout_secs: u64,
+
+    /// Host allowlist for URL fetches (empty = allow all hosts). Exact
+    /// host or `*.suffix` wildcard.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
+    /// Host denylist for URL fetches, checked before `allowed_hosts`.
+    /// Defaults block loopback, link-local and cloud metadata endpoints
+    /// (SSRF). Exact host or `*.suffix` wildcard.
+    #[serde(default = "default_denied_hosts")]
+    pub denied_hosts: Vec<String>,
+
+    /// URL fetches ignore `auto_approve` and always go through the
+    /// approval channel when true. One-way merge (project layer can only
+    /// relax, not tighten — same semantics as
+    /// `llm.internal_thinking_disabled`).
+    #[serde(default = "default_network_requires_approval")]
+    pub network_requires_approval: bool,
 }
 
 impl Default for ToolsConfig {
@@ -213,6 +240,11 @@ impl Default for ToolsConfig {
                 "mkfs".into(),
             ],
             enable_web: true,
+            max_fetch_bytes: default_max_fetch_bytes(),
+            fetch_timeout_secs: default_fetch_timeout_secs(),
+            allowed_hosts: Vec::new(),
+            denied_hosts: default_denied_hosts(),
+            network_requires_approval: default_network_requires_approval(),
         }
     }
 }
@@ -262,6 +294,30 @@ pub(super) fn default_true() -> bool {
 }
 #[doc(hidden)]
 pub fn default_internal_thinking_disabled() -> bool {
+    true
+}
+#[doc(hidden)]
+pub fn default_max_fetch_bytes() -> usize {
+    52_428_800
+}
+#[doc(hidden)]
+pub fn default_fetch_timeout_secs() -> u64 {
+    60
+}
+#[doc(hidden)]
+pub fn default_denied_hosts() -> Vec<String> {
+    vec![
+        "127.0.0.1".into(),
+        "localhost".into(),
+        "::1".into(),
+        "169.254.169.254".into(),
+        "metadata.google.internal".into(),
+        "*.internal".into(),
+        "*.local".into(),
+    ]
+}
+#[doc(hidden)]
+pub fn default_network_requires_approval() -> bool {
     true
 }
 

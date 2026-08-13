@@ -87,6 +87,22 @@ pub fn merge_config(base: &mut Config, other: Config) {
         base.tools.denied_commands = other.tools.denied_commands;
     }
     base.tools.enable_web = other.tools.enable_web;
+    if other.tools.max_fetch_bytes != settings::default_max_fetch_bytes() {
+        base.tools.max_fetch_bytes = other.tools.max_fetch_bytes;
+    }
+    if other.tools.fetch_timeout_secs != settings::default_fetch_timeout_secs() {
+        base.tools.fetch_timeout_secs = other.tools.fetch_timeout_secs;
+    }
+    if !other.tools.allowed_hosts.is_empty() {
+        base.tools.allowed_hosts = other.tools.allowed_hosts;
+    }
+    if !other.tools.denied_hosts.is_empty() {
+        base.tools.denied_hosts = other.tools.denied_hosts;
+    }
+    // One-way merge (false wins), mirroring internal_thinking_disabled.
+    if !other.tools.network_requires_approval {
+        base.tools.network_requires_approval = false;
+    }
     if other.memory.json_lock {
         base.memory.json_lock = true;
     }
@@ -121,6 +137,22 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     set_usize_env("LCODE_TODO_MAX_ITEMS", &mut cfg.todo.max_items);
     if let Ok(val) = std::env::var("LCODE_MEMORY_JSON_LOCK") {
         cfg.memory.json_lock = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    set_usize_env("LCODE_TOOLS_MAX_FETCH_BYTES", &mut cfg.tools.max_fetch_bytes);
+    set_u64_env("LCODE_TOOLS_FETCH_TIMEOUT_SECS", &mut cfg.tools.fetch_timeout_secs);
+    set_list_env("LCODE_TOOLS_ALLOWED_HOSTS", &mut cfg.tools.allowed_hosts);
+    set_list_env("LCODE_TOOLS_DENIED_HOSTS", &mut cfg.tools.denied_hosts);
+    if let Ok(val) = std::env::var("LCODE_TOOLS_NETWORK_REQUIRES_APPROVAL") {
+        cfg.tools.network_requires_approval = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+}
+
+/// Set a `Vec<String>` field from a comma-separated `LCODE_*` env var
+/// (empty segments are skipped).
+fn set_list_env(key: &str, target: &mut Vec<String>) {
+    if let Ok(val) = std::env::var(key) {
+        *target =
+            val.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
     }
 }
 

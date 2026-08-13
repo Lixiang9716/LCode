@@ -30,6 +30,9 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
             println!("  tools.allowed_dirs  - Allowed directories (comma-separated)");
             println!("  tools.allowed_commands - Always-allowed shell commands");
             println!("  tools.enable_web    - Enable web tools (true/false)");
+            println!("  tools.max_fetch_bytes - Max bytes for one URL fetch");
+            println!("  tools.fetch_timeout_secs - URL fetch timeout (seconds)");
+            println!("  tools.network_requires_approval - Always approve URL fetches (true/false)");
         }
         ConfigAction::Get { key } => {
             let cfg = load()?;
@@ -65,6 +68,9 @@ pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
         "agent.max_turns" => Ok(cfg.agent.max_turns.to_string()),
         "agent.require_approval" => Ok(cfg.agent.require_approval.to_string()),
         "tools.enable_web" => Ok(cfg.tools.enable_web.to_string()),
+        "tools.max_fetch_bytes" => Ok(cfg.tools.max_fetch_bytes.to_string()),
+        "tools.fetch_timeout_secs" => Ok(cfg.tools.fetch_timeout_secs.to_string()),
+        "tools.network_requires_approval" => Ok(cfg.tools.network_requires_approval.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),
     }
 }
@@ -96,42 +102,102 @@ pub fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
         Config::default()
     };
 
-    // Update the specific field
-    match key {
-        "llm.provider" => cfg.llm.provider = value.to_string(),
-        "llm.api_key" => cfg.llm.api_key = value.to_string(),
-        "llm.model" => cfg.llm.model = value.to_string(),
-        "llm.api_base" => cfg.llm.api_base = Some(value.to_string()),
-        "llm.max_tokens" => cfg.llm.max_tokens = value.parse()?,
-        "llm.temperature" => cfg.llm.temperature = value.parse()?,
-        "llm.fallback_model" => {
-            cfg.llm.fallback_model = if value.is_empty() { None } else { Some(value.to_string()) }
-        }
-        "agent.system_prompt" => cfg.agent.system_prompt = value.to_string(),
-        "agent.max_turns" => cfg.agent.max_turns = value.parse()?,
-        "agent.require_approval" => cfg.agent.require_approval = value.parse()?,
-        "llm.thinking_disabled" => cfg.llm.thinking_disabled = value.parse()?,
-        "llm.reasoning_effort" => {
-            cfg.llm.reasoning_effort = match value.to_lowercase().as_str() {
-                "low" => Some(crate::config::ReasoningEffort::Low),
-                "high" => Some(crate::config::ReasoningEffort::High),
-                "max" => Some(crate::config::ReasoningEffort::Max),
-                other => anyhow::bail!("Invalid reasoning_effort: {other} (low/high/max)"),
-            }
-        }
-        "llm.internal_thinking_disabled" => cfg.llm.internal_thinking_disabled = value.parse()?,
-        "memory.json_lock" => cfg.memory.json_lock = value.parse()?,
-        "tools.enable_web" => cfg.tools.enable_web = value.parse()?,
-        _ => anyhow::bail!(
-            "Unknown config key: {}. Use `lcode config list` to see available keys.",
-            key
-        ),
-    }
+    // Dispatch to the section helper, then persist exactly once. The
+    // helpers mutate `cfg` in place and only fail on unknown keys, so
+    // the file is never half-written.
+    set_field(&mut cfg, key, value)?;
 
-    // Write config
     let content = toml::to_string_pretty(&cfg)?;
     std::fs::write(&config_path, content)?;
+    Ok(())
+}
 
+/// Apply one `section.key` value to the config in memory.
+fn set_field(cfg: &mut Config, key: &str, value: &str) -> anyhow::Result<()> {
+    if let Some(tool_key) = key.strip_prefix("tools.") {
+        return set_tools_value(&mut cfg.tools, tool_key, value);
+    }
+    if let Some(agent_key) = key.strip_prefix("agent.") {
+        return set_agent_value(&mut cfg.agent, agent_key, value);
+    }
+    if let Some(memory_key) = key.strip_prefix("memory.") {
+        return set_memory_value(&mut cfg.memory, memory_key, value);
+    }
+    if let Some(llm_key) = key.strip_prefix("llm.") {
+        return set_llm_value(&mut cfg.llm, llm_key, value);
+    }
+    anyhow::bail!("Unknown config key: {key}. Use `lcode config list` to see available keys.");
+}
+
+/// Set an `llm.*` scalar config key.
+fn set_llm_value(llm: &mut crate::config::LlmConfig, key: &str, value: &str) -> anyhow::Result<()> {
+    match key {
+        "provider" => llm.provider = value.to_string(),
+        "api_key" => llm.api_key = value.to_string(),
+        "model" => llm.model = value.to_string(),
+        "api_base" => llm.api_base = Some(value.to_string()),
+        "max_tokens" => llm.max_tokens = value.parse()?,
+        "temperature" => llm.temperature = value.parse()?,
+        "fallback_model" => {
+            llm.fallback_model = if value.is_empty() { None } else { Some(value.to_string()) }
+        }
+        "thinking_disabled" => llm.thinking_disabled = value.parse()?,
+        "reasoning_effort" => {
+            // Empty / "none" clears the setting (back to the model
+            // default tier, high).
+            llm.reasoning_effort = if value.is_empty() || value.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                Some(value.parse().map_err(|e: String| anyhow::anyhow!(e))?)
+            };
+        }
+        "internal_thinking_disabled" => llm.internal_thinking_disabled = value.parse()?,
+        other => anyhow::bail!("Unknown config key: llm.{other}"),
+    }
+    Ok(())
+}
+
+/// Set an `agent.*` scalar config key.
+fn set_agent_value(
+    agent: &mut crate::config::AgentConfig,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    match key {
+        "system_prompt" => agent.system_prompt = value.to_string(),
+        "max_turns" => agent.max_turns = value.parse()?,
+        "require_approval" => agent.require_approval = value.parse()?,
+        other => anyhow::bail!("Unknown config key: agent.{other}"),
+    }
+    Ok(())
+}
+
+/// Set a `memory.*` scalar config key.
+fn set_memory_value(
+    memory: &mut crate::config::MemoryConfig,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    match key {
+        "json_lock" => memory.json_lock = value.parse()?,
+        other => anyhow::bail!("Unknown config key: memory.{other}"),
+    }
+    Ok(())
+}
+
+/// Set a `tools.*` scalar config key.
+fn set_tools_value(
+    tools: &mut crate::config::ToolsConfig,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    match key {
+        "enable_web" => tools.enable_web = value.parse()?,
+        "max_fetch_bytes" => tools.max_fetch_bytes = value.parse()?,
+        "fetch_timeout_secs" => tools.fetch_timeout_secs = value.parse()?,
+        "network_requires_approval" => tools.network_requires_approval = value.parse()?,
+        other => anyhow::bail!("Unknown config key: tools.{other}"),
+    }
     Ok(())
 }
 

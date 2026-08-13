@@ -2,17 +2,19 @@
 //!
 //! Tools for reading and writing files. `write_file` doubles as the
 //! find-and-replace editor via its optional `replace` argument, so the
-//! tool surface stays at a single write path.
+//! tool surface stays at a single write path. Both tools accept
+//! http(s) URLs (read_file.path / write_file.url) with the host policy,
+//! size cap and timeouts enforced by [`super::fetch`].
 
-use crate::config::Config;
+use crate::config::{Config, ToolsConfig};
 use crate::tools::{Tool, ToolResult};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// In-place edit: replace the unique exact match of `old_string` with
 /// `new_string` (the former edit_file semantics, folded into write_file
 /// so the tool surface keeps a single write path).
 fn apply_replace(
-    full_path: &std::path::Path,
+    full_path: &Path,
     path_str: &str,
     replace: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<ToolResult> {
@@ -55,7 +57,11 @@ fn write_file_schema() -> serde_json::Value {
             },
             "content": {
                 "type": "string",
-                "description": "The content to write to the file (ignored when `replace` is set)"
+                "description": "The content to write (ignored when `replace` or `url` is set)"
+            },
+            "url": {
+                "type": "string",
+                "description": "Fetch this http(s) URL and write it to `path` (requires tools.enable_web)"
             },
             "replace": {
                 "type": "object",
@@ -77,21 +83,100 @@ fn write_file_schema() -> serde_json::Value {
     })
 }
 
-/// Tool for reading file contents.
+/// Enforce `tools.allowed_dirs`: the target must live under the
+/// workspace root (default) or one of the listed directories. Resolves
+/// `..` and symlinks by canonicalizing the deepest existing ancestor,
+/// then re-joining the not-yet-created tail (writes may create files).
+fn check_path_allowed(root: &Path, allowed: &[String], target: &Path) -> anyhow::Result<()> {
+    let abs = if target.is_absolute() { target.to_path_buf() } else { root.join(target) };
+    let mut existing = abs.as_path();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        tail.push(existing.file_name().unwrap_or_default().to_os_string());
+        existing = existing.parent().ok_or_else(|| {
+            anyhow::anyhow!("path has no existing ancestor: {}", target.display())
+        })?;
+    }
+    let mut resolved = existing.canonicalize()?;
+    for seg in tail.iter().rev() {
+        resolved = resolved.join(seg);
+    }
+    let roots: Vec<PathBuf> = if allowed.is_empty() {
+        vec![root.canonicalize().unwrap_or_else(|_| root.to_path_buf())]
+    } else {
+        allowed.iter().map(|d| root.join(PathBuf::from(d))).collect()
+    };
+    let inside = roots.iter().any(|r| {
+        let r = r.canonicalize().unwrap_or_else(|_| r.clone());
+        resolved.starts_with(&r)
+    });
+    if !inside {
+        anyhow::bail!("path outside allowed directories: {}", target.display());
+    }
+    Ok(())
+}
+
+/// Atomic write: temp file next to the target, then rename over it.
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Number the lines of `text` honouring offset/limit. Returns the
+/// numbered output plus (start, end, total) for the summary line.
+fn numbered_lines(text: &str, args: &serde_json::Value) -> (String, usize, usize, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(lines.len());
+    let start = offset.min(lines.len());
+    let end = (start + limit).min(lines.len());
+    let output = lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{:>6}\t{}", start + i + 1, line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    (output, start, end, lines.len())
+}
+
+/// Summary line for a read: bytes/kind plus the line range.
+fn read_summary(path_str: &str, start: usize, end: usize, total: usize, prefix: &str) -> String {
+    format!(
+        "{}: Read {} lines ({} to {} of {}) from {}",
+        prefix,
+        end - start,
+        start + 1,
+        end,
+        total,
+        path_str
+    )
+}
+
+/// Tool for reading file contents (local paths or http(s) URLs).
 pub struct ReadFileTool {
     workspace_root: PathBuf,
+    config: ToolsConfig,
 }
 
 impl ReadFileTool {
-    pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self { workspace_root: std::env::current_dir()? })
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
+        Ok(Self { workspace_root: std::env::current_dir()?, config: config.tools.clone() })
     }
 
-    /// Create a tool rooted at `root` instead of the current directory.
+    /// Create a tool rooted at `root` with default tool settings.
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn new_with_root(root: PathBuf) -> Self {
-        Self { workspace_root: root }
+        Self { workspace_root: root, config: ToolsConfig::default() }
+    }
+
+    /// Create a tool rooted at `root` with explicit tool settings.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root_and_config(root: PathBuf, config: ToolsConfig) -> Self {
+        Self { workspace_root: root, config }
     }
 }
 
@@ -101,7 +186,8 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file at the given path. Returns the file contents with line numbers."
+        "Read the contents of a file at the given path (or fetch an \
+         http(s) URL). Returns the file contents with line numbers."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -110,7 +196,7 @@ impl Tool for ReadFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The path to the file to read (relative to workspace root)"
+                    "description": "The path to the file to read (relative to workspace root), or an http(s) URL"
                 },
                 "offset": {
                     "type": "integer",
@@ -129,60 +215,57 @@ impl Tool for ReadFileTool {
         let path_str =
             args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
 
+        if crate::tools::fetch::is_http_url(path_str) {
+            let (bytes, content_type) = crate::tools::fetch::fetch_url(path_str, &self.config)?;
+            let text = String::from_utf8_lossy(&bytes);
+            let (output, start, end, total) = numbered_lines(&text, args);
+            let kind = content_type.as_deref().unwrap_or("unknown content type");
+            let prefix = format!("Fetched {} bytes ({})", bytes.len(), kind);
+            let summary = read_summary(path_str, start, end, total, &prefix);
+            return Ok(ToolResult::ok(format!("{}\n\n{}", summary, output)));
+        }
+
         let full_path = self.workspace_root.join(path_str);
+        check_path_allowed(&self.workspace_root, &self.config.allowed_dirs, &full_path)?;
 
         if !full_path.exists() {
             return Ok(ToolResult::err(format!("File not found: {}", path_str)));
         }
-
         if !full_path.is_file() {
             return Ok(ToolResult::err(format!("Not a file: {}", path_str)));
         }
 
         let content = std::fs::read_to_string(&full_path)?;
-        let lines: Vec<&str> = content.lines().collect();
-
-        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(lines.len());
-
-        let start = offset.min(lines.len());
-        let end = (start + limit).min(lines.len());
-
-        let numbered: Vec<String> = lines[start..end]
-            .iter()
-            .enumerate()
-            .map(|(i, line)| format!("{:>6}\t{}", start + i + 1, line))
-            .collect();
-
-        let output = numbered.join("\n");
-        let summary = format!(
-            "Read {} lines ({} to {} of {}) from {}",
-            end - start,
-            start + 1,
-            end,
-            lines.len(),
-            path_str
-        );
-
-        Ok(ToolResult::ok(format!("{}\n\n{}", summary, output)))
+        let (output, start, end, total) = numbered_lines(&content, args);
+        let summary = read_summary(path_str, start, end, total, "");
+        Ok(ToolResult::ok(format!("{}\n\n{}", summary.trim(), output)))
     }
 }
 
-/// Tool for writing file contents.
+/// Tool for writing file contents (full write, in-place replace, or
+/// URL fetch to path).
 pub struct WriteFileTool {
     workspace_root: PathBuf,
+    config: ToolsConfig,
 }
 
 impl WriteFileTool {
-    pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        Ok(Self { workspace_root: std::env::current_dir()? })
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
+        Ok(Self { workspace_root: std::env::current_dir()?, config: config.tools.clone() })
     }
 
-    /// Create a tool rooted at `root` instead of the current directory.
+    /// Create a tool rooted at `root` with default tool settings.
     /// Hidden: only used by tests in tests/.
     #[doc(hidden)]
     pub fn new_with_root(root: PathBuf) -> Self {
-        Self { workspace_root: root }
+        Self { workspace_root: root, config: ToolsConfig::default() }
+    }
+
+    /// Create a tool rooted at `root` with explicit tool settings.
+    /// Hidden: only used by tests in tests/.
+    #[doc(hidden)]
+    pub fn new_with_root_and_config(root: PathBuf, config: ToolsConfig) -> Self {
+        Self { workspace_root: root, config }
     }
 }
 
@@ -192,9 +275,9 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file, or edit it in place via an optional \
-         `replace` object: the old_string must match exactly once. \
-         With `replace`, `content` is ignored."
+        "Write content to a file, edit it in place via an optional \
+         `replace` object (unique exact match), or fetch an http(s) URL \
+         into the file via the optional `url` argument."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -205,22 +288,31 @@ impl Tool for WriteFileTool {
         let path_str =
             args["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
         let full_path = self.workspace_root.join(path_str);
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        check_path_allowed(&self.workspace_root, &self.config.allowed_dirs, &full_path)?;
 
-        // In-place edit mode: unique exact match, replacen once. Mirrors
-        // the former edit_file tool so one write path serves both.
+        // In-place edit mode: unique exact match, replacen once.
         if let Some(replace) = args["replace"].as_object() {
             return apply_replace(&full_path, path_str, replace);
         }
 
-        let content = args["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument (or 'replace')"))?;
-
-        // Create parent directories if needed
-        if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        // URL fetch mode: fetch then write atomically (temp + rename).
+        if let Some(url) = args["url"].as_str() {
+            let (bytes, _content_type) = crate::tools::fetch::fetch_url(url, &self.config)?;
+            write_atomic(&full_path, &bytes)?;
+            return Ok(ToolResult::ok(format!(
+                "Fetched {} bytes from {} to {}",
+                bytes.len(),
+                url,
+                path_str
+            )));
         }
 
+        let content = args["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument (or 'replace'/'url')"))?;
         std::fs::write(&full_path, content)?;
 
         let size = content.len();

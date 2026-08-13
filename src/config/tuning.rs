@@ -291,6 +291,9 @@ pub struct RuntimeTuning {
     pub events: EventsConfig,
     pub todo: TodoConfig,
     pub todo_nag_after_turns: u32,
+    /// URL fetches (read_file/write_file) ignore auto_approve and go
+    /// through the approval channel when true.
+    pub network_requires_approval: bool,
 }
 
 impl RuntimeTuning {
@@ -306,6 +309,7 @@ impl RuntimeTuning {
             events: cfg.events.clone(),
             todo: cfg.todo.clone(),
             todo_nag_after_turns: cfg.agent.todo_nag_after_turns,
+            network_requires_approval: cfg.tools.network_requires_approval,
         }
     }
 }

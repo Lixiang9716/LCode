@@ -12,6 +12,7 @@ use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod fetch;
 pub mod file;
 pub mod search;
 pub mod shell;

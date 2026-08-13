@@ -321,12 +321,12 @@ impl Executor {
         // Parse arguments
         let parsed_args: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
 
-        // Publish the tool call request with its approval requirement
+        // Publish the tool call request with its approval requirement.
         self.runtime.publish(AgentEvent::ToolCallRequested {
             id: tc.id.clone(),
             name: tool_name.clone(),
             arguments: parsed_args.clone(),
-            requires_approval: !self.auto_approve,
+            requires_approval: requires_approval_for(self, tool_name, &parsed_args),
         });
 
         // PreToolUse hooks: a Block decision cancels the call (s20)
@@ -354,8 +354,9 @@ impl Executor {
         tool_call_id: &str,
         memory: &mut ConversationMemory,
     ) -> anyhow::Result<LoopControl> {
-        // Request approval through the command channel (non-blocking stdin)
-        if !self.auto_approve {
+        // Request approval through the command channel (non-blocking
+        // stdin); URL fetches may force approval (see helper below).
+        if requires_approval_for(self, tool_name, &parsed_args) {
             match self.runtime.await_approval(tool_call_id).await {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Rejected => {
@@ -416,6 +417,23 @@ impl Executor {
 fn abort_session(runtime: &AgentRuntime, aborted: &mut bool) {
     runtime.publish(AgentEvent::TaskAborted { reason: "Aborted by user".to_string() });
     *aborted = true;
+}
+
+/// Does this tool invocation require approval? Always when
+/// auto-approve is off; URL fetches also force it while
+/// `tools.network_requires_approval` is on (default).
+fn requires_approval_for(executor: &Executor, tool_name: &str, args: &serde_json::Value) -> bool {
+    !executor.auto_approve
+        || (is_network_call(tool_name, args)
+            && executor.tuning.as_ref().is_some_and(|t| t.network_requires_approval))
+}
+
+/// Is this invocation a network fetch (write_file `url` or read_file
+/// with an http(s) path)?
+fn is_network_call(tool_name: &str, args: &serde_json::Value) -> bool {
+    args.get("url").is_some()
+        || (tool_name == "read_file"
+            && args["path"].as_str().is_some_and(crate::tools::fetch::is_http_url))
 }
 
 /// Record a user-declined tool call in the conversation memory.
