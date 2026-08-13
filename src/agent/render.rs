@@ -40,6 +40,23 @@ pub fn render_event(event: &AgentEvent) {
         AgentEvent::TaskFinished { turns, .. } => {
             println!("\n✅ Task completed in {} turns.", turns);
         }
+        AgentEvent::UsageSummary {
+            prompt_tokens,
+            completion_tokens,
+            cache_hit_tokens,
+            reasoning_tokens,
+            ..
+        } => {
+            let usage = crate::llm::Usage {
+                prompt_tokens: *prompt_tokens,
+                completion_tokens: *completion_tokens,
+                total_tokens: *prompt_tokens + *completion_tokens,
+                cache_hit_tokens: *cache_hit_tokens,
+                cache_miss_tokens: prompt_tokens.saturating_sub(*cache_hit_tokens),
+                reasoning_tokens: *reasoning_tokens,
+            };
+            println!("{}", crate::llm::usage_summary("", &usage));
+        }
         AgentEvent::TaskAborted { reason } => println!("\n⚠️  {}", reason),
         AgentEvent::Error { message } => println!("\n❌ {}", message),
 

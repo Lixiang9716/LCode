@@ -11,8 +11,10 @@ pub mod anthropic;
 pub mod openai;
 pub mod provider;
 pub mod sse;
+pub mod usage_cost;
 
 pub use provider::LlmProvider;
+pub use usage_cost::{estimate_cost, format_cost, pricing_for, usage_summary, Pricing};
 
 /// A single event in a streamed chat response.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,11 +96,21 @@ pub struct LlmResponse {
 }
 
 /// Token usage statistics.
+///
+/// The cache and reasoning fields are DeepSeek-specific and zero on
+/// providers that do not report them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Input tokens served from the context cache (billed at the
+    /// discounted cache-hit rate).
+    pub cache_hit_tokens: u32,
+    /// Input tokens processed fresh (billed at the standard input rate).
+    pub cache_miss_tokens: u32,
+    /// Completion tokens spent on hidden reasoning (thinking mode).
+    pub reasoning_tokens: u32,
 }
 
 /// Reason the model stopped generating.

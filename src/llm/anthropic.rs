@@ -4,7 +4,7 @@ use crate::config::LlmConfig;
 use crate::llm::sse::{sse_stream, SseData};
 use crate::llm::{
     ChatMessage, FinishReason, FunctionCall, LlmProvider, LlmResponse, StreamEvent,
-    ToolCallRequest, ToolDefinition, Usage,
+    ToolCallRequest, ToolDefinition,
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -276,12 +276,7 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
         }
         Some("message_delta") => {
             let stop_reason = data["delta"]["stop_reason"].as_str();
-            let usage = data.get("usage").map(|usage| crate::llm::Usage {
-                prompt_tokens: usage["input_tokens"].as_u64().unwrap_or(0) as u32,
-                completion_tokens: usage["output_tokens"].as_u64().unwrap_or(0) as u32,
-                total_tokens: usage["input_tokens"].as_u64().unwrap_or(0) as u32
-                    + usage["output_tokens"].as_u64().unwrap_or(0) as u32,
-            });
+            let usage = data.get("usage").map(anthropic_usage);
             Some(StreamEvent::Done {
                 reason: match stop_reason {
                     Some("end_turn") => FinishReason::Stop,
@@ -298,6 +293,24 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
         // the executor treat a tool-call stream as a silent empty text.
         Some("message_stop") => None,
         _ => None,
+    }
+}
+
+/// Parse an Anthropic-style usage block: `cache_read_input_tokens` maps
+/// to cache hits, everything else in the input is a cache miss, and
+/// `output_tokens` cover both reasoning and final text on DeepSeek's
+/// Anthropic-compatible endpoint.
+fn anthropic_usage(u: &serde_json::Value) -> crate::llm::Usage {
+    let input: u32 = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+    let output: u32 = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+    let hit: u32 = u["cache_read_input_tokens"].as_u64().unwrap_or(0) as u32;
+    crate::llm::Usage {
+        prompt_tokens: input,
+        completion_tokens: output,
+        total_tokens: input + output,
+        cache_hit_tokens: hit,
+        cache_miss_tokens: input.saturating_sub(hit),
+        reasoning_tokens: 0,
     }
 }
 
@@ -455,12 +468,7 @@ pub fn parse_anthropic_response(data: &serde_json::Value) -> anyhow::Result<LlmR
         _ => FinishReason::Unknown,
     };
 
-    let usage = data.get("usage").map_or(Usage::default(), |u| Usage {
-        prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
-        completion_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
-        total_tokens: (u["input_tokens"].as_u64().unwrap_or(0)
-            + u["output_tokens"].as_u64().unwrap_or(0)) as u32,
-    });
+    let usage = data.get("usage").map(anthropic_usage).unwrap_or_default();
 
     Ok(LlmResponse {
         content: text_content,

@@ -367,6 +367,20 @@ async fn execute_session(
     // before awaiting the renderer, or the renderer never observes the
     // channel close and the process hangs after the task completes.
     let outcome = TaskOutcome { completed: !executor.aborted, turns: executor.last_turn };
+    // Session-level usage summary: token counts, cache hits and the
+    // estimated cost (provider pricing tier by configured model).
+    if !executor.aborted {
+        let usage = executor.last_usage.clone();
+        executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
+            model: config.llm.model.clone(),
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            cache_hit_tokens: usage.cache_hit_tokens,
+            cache_miss_tokens: usage.cache_miss_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
+        });
+    }
     drop(executor);
 
     // Teammate loops hold the team event bus; without a shutdown signal
