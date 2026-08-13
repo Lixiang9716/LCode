@@ -390,11 +390,12 @@ async fn execute_session(
     // observes the channel close (the process hangs for minutes).
     team_bus.shutdown();
 
-    // Per-agent usage: teammate loops persist their running totals to
-    // `.team/usage.jsonl`; surface them next to the lead's summary.
-    print_team_usage(&workspace, &config.llm.model);
-
     let _ = renderer.await;
+
+    // Per-agent usage: teammate loops persist their running totals to
+    // `.team/usage.jsonl`; the renderer await above guarantees they
+    // exited (they hold the team event bus), so the totals are final.
+    print_team_usage(&workspace, &config.llm.model);
     let _ = recorder.await;
     Ok(outcome)
 }
