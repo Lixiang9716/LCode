@@ -14,6 +14,7 @@ use std::fmt;
 
 pub mod fetch;
 pub mod file;
+pub mod scrub;
 pub mod search;
 pub mod shell;
 

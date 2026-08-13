@@ -226,6 +226,19 @@ pub struct ToolsConfig {
     /// `llm.internal_thinking_disabled`).
     #[serde(default = "default_network_requires_approval")]
     pub network_requires_approval: bool,
+
+    /// File paths read_file refuses to read (secret material). Wildcard
+    /// patterns (`*`/`?`), matched against the file name and the full
+    /// relative path.
+    #[serde(default = "default_sensitive_paths")]
+    pub sensitive_paths: Vec<String>,
+
+    /// Redact detected secrets in read_file output (gitleaks-compatible
+    /// rules) before it reaches the LLM context. Best effort — the
+    /// sensitive-path block and the approval gate are the hard lines.
+    /// One-way merge (false wins).
+    #[serde(default = "default_scrub_secrets")]
+    pub scrub_secrets: bool,
 }
 
 impl Default for ToolsConfig {
@@ -245,6 +258,8 @@ impl Default for ToolsConfig {
             allowed_hosts: Vec::new(),
             denied_hosts: default_denied_hosts(),
             network_requires_approval: default_network_requires_approval(),
+            sensitive_paths: default_sensitive_paths(),
+            scrub_secrets: default_scrub_secrets(),
         }
     }
 }
@@ -318,6 +333,21 @@ pub fn default_denied_hosts() -> Vec<String> {
 }
 #[doc(hidden)]
 pub fn default_network_requires_approval() -> bool {
+    true
+}
+#[doc(hidden)]
+pub fn default_sensitive_paths() -> Vec<String> {
+    vec![
+        ".env".into(),
+        ".env.*".into(),
+        ".lcode.toml".into(),
+        "*.pem".into(),
+        "id_rsa*".into(),
+        ".ssh/*".into(),
+    ]
+}
+#[doc(hidden)]
+pub fn default_scrub_secrets() -> bool {
     true
 }
 

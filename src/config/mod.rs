@@ -103,6 +103,14 @@ pub fn merge_config(base: &mut Config, other: Config) {
     if !other.tools.network_requires_approval {
         base.tools.network_requires_approval = false;
     }
+    if !other.tools.sensitive_paths.is_empty() {
+        base.tools.sensitive_paths = other.tools.sensitive_paths;
+    }
+    // One-way merge (false wins): a project layer may disable
+    // scrubbing for its own workspace, never tighten the global default.
+    if !other.tools.scrub_secrets {
+        base.tools.scrub_secrets = false;
+    }
     if other.memory.json_lock {
         base.memory.json_lock = true;
     }
@@ -144,6 +152,10 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     set_list_env("LCODE_TOOLS_DENIED_HOSTS", &mut cfg.tools.denied_hosts);
     if let Ok(val) = std::env::var("LCODE_TOOLS_NETWORK_REQUIRES_APPROVAL") {
         cfg.tools.network_requires_approval = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    set_list_env("LCODE_TOOLS_SENSITIVE_PATHS", &mut cfg.tools.sensitive_paths);
+    if let Ok(val) = std::env::var("LCODE_TOOLS_SCRUB_SECRETS") {
+        cfg.tools.scrub_secrets = val == "1" || val.eq_ignore_ascii_case("true");
     }
 }
 

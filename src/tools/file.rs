@@ -124,6 +124,20 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Content entering the LLM context: binary data is refused, secrets
+/// are scrubbed (when enabled). URL fetches pass through the same gate.
+fn text_for_context(bytes: &[u8], config: &ToolsConfig) -> anyhow::Result<String> {
+    if crate::tools::scrub::looks_binary(bytes) {
+        anyhow::bail!("binary content (not text); use bash to handle it");
+    }
+    let text = String::from_utf8(bytes.to_vec()).expect("non-binary check passed");
+    if config.scrub_secrets {
+        Ok(crate::tools::scrub::scrub_secrets(&text))
+    } else {
+        Ok(text)
+    }
+}
+
 /// Number the lines of `text` honouring offset/limit. Returns the
 /// numbered output plus (start, end, total) for the summary line.
 fn numbered_lines(text: &str, args: &serde_json::Value) -> (String, usize, usize, usize) {
@@ -217,12 +231,19 @@ impl Tool for ReadFileTool {
 
         if crate::tools::fetch::is_http_url(path_str) {
             let (bytes, content_type) = crate::tools::fetch::fetch_url(path_str, &self.config)?;
-            let text = String::from_utf8_lossy(&bytes);
+            let text = match text_for_context(&bytes, &self.config) {
+                Ok(text) => text,
+                Err(e) => return Ok(ToolResult::err(e.to_string())),
+            };
             let (output, start, end, total) = numbered_lines(&text, args);
             let kind = content_type.as_deref().unwrap_or("unknown content type");
             let prefix = format!("Fetched {} bytes ({})", bytes.len(), kind);
             let summary = read_summary(path_str, start, end, total, &prefix);
             return Ok(ToolResult::ok(format!("{}\n\n{}", summary, output)));
+        }
+
+        if crate::tools::scrub::is_sensitive_path(path_str, &self.config.sensitive_paths) {
+            return Ok(ToolResult::err(format!("refusing to read sensitive path: {}", path_str)));
         }
 
         let full_path = self.workspace_root.join(path_str);
@@ -235,7 +256,11 @@ impl Tool for ReadFileTool {
             return Ok(ToolResult::err(format!("Not a file: {}", path_str)));
         }
 
-        let content = std::fs::read_to_string(&full_path)?;
+        let bytes = std::fs::read(&full_path)?;
+        let content = match text_for_context(&bytes, &self.config) {
+            Ok(content) => content,
+            Err(e) => return Ok(ToolResult::err(e.to_string())),
+        };
         let (output, start, end, total) = numbered_lines(&content, args);
         let summary = read_summary(path_str, start, end, total, "");
         Ok(ToolResult::ok(format!("{}\n\n{}", summary.trim(), output)))

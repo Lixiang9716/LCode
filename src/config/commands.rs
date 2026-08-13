@@ -33,6 +33,7 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
             println!("  tools.max_fetch_bytes - Max bytes for one URL fetch");
             println!("  tools.fetch_timeout_secs - URL fetch timeout (seconds)");
             println!("  tools.network_requires_approval - Always approve URL fetches (true/false)");
+            println!("  tools.scrub_secrets - Redact secrets in read_file output (true/false)");
         }
         ConfigAction::Get { key } => {
             let cfg = load()?;
@@ -71,6 +72,7 @@ pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
         "tools.max_fetch_bytes" => Ok(cfg.tools.max_fetch_bytes.to_string()),
         "tools.fetch_timeout_secs" => Ok(cfg.tools.fetch_timeout_secs.to_string()),
         "tools.network_requires_approval" => Ok(cfg.tools.network_requires_approval.to_string()),
+        "tools.scrub_secrets" => Ok(cfg.tools.scrub_secrets.to_string()),
         _ => anyhow::bail!("Unknown config key: {}", key),
     }
 }
@@ -196,6 +198,7 @@ fn set_tools_value(
         "max_fetch_bytes" => tools.max_fetch_bytes = value.parse()?,
         "fetch_timeout_secs" => tools.fetch_timeout_secs = value.parse()?,
         "network_requires_approval" => tools.network_requires_approval = value.parse()?,
+        "scrub_secrets" => tools.scrub_secrets = value.parse()?,
         other => anyhow::bail!("Unknown config key: tools.{other}"),
     }
     Ok(())
