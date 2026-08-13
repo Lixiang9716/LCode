@@ -73,6 +73,8 @@ regex-lite = "0.1"
 # automock is compiled unconditionally so integration tests can use it)
 mockall = "0.13"
 secrecy = { version = "0.10.3", features = ["serde"] }
+sha2 = "0.11.0"
+hex = "0.4.3"
 
 [dev-dependencies]
 tempfile = "3"

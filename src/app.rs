@@ -35,8 +35,25 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Update { check, force } => {
             crate::update::run(check, force).await?;
         }
+        Command::Assets { action } => {
+            handle_assets(action)?;
+        }
     }
     Ok(())
+}
+
+/// Handle the `lcode assets` subcommands.
+fn handle_assets(action: crate::cli::AssetsAction) -> anyhow::Result<()> {
+    match action {
+        crate::cli::AssetsAction::Check => {
+            let report = crate::assets::check(&std::env::current_dir()?)?;
+            println!("{}", report.render());
+            if !report.ok() {
+                anyhow::bail!("asset check found {} issue(s)", report.issues.len());
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Handle the `lcode session` subcommands (save / list / resume).

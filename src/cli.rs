@@ -77,6 +77,19 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Validate the workspace's assets/ registry (sidecar schema,
+    /// sha256 integrity, orphans)
+    Assets {
+        #[command(subcommand)]
+        action: AssetsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AssetsAction {
+    /// Read-only validation of the assets/ registry
+    Check,
 }
 
 #[derive(Subcommand, Debug)]

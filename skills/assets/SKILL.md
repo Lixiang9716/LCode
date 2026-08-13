@@ -68,7 +68,10 @@ Every sidecar is JSON with a tagged `kind` and kind-specific fields:
    → **mask the key in the command echo**, record `balance_usd` only.
 9. **Verify integrity** — `bash: sha256sum -c <(echo "<hex>  assets/<name>")`
    or recompute and compare with the sidecar; update the sidecar when the
-   file legitimately changed.
+   file legitimately changed. When done with a batch of changes, run the
+   enforcement pass: `bash: lcode assets check` — it validates every
+   sidecar's schema, recomputes file sha256, and reports orphan
+   payloads/sidecars; fix everything it reports.
 10. **Remove** — delete the file and its sidecar. No other bookkeeping.
 
 ## Hard rules
