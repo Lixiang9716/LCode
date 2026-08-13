@@ -78,6 +78,9 @@ pub struct Executor {
     pub(crate) aborted: bool,
     /// Last turn counter reached before the session ended.
     pub(crate) last_turn: u32,
+    /// Aggregated usage of the last finished session (cache/理 breakdown
+    /// included), consumed by the session layer for the UsageSummary.
+    pub(crate) last_usage: crate::llm::Usage,
 }
 
 impl Executor {
@@ -106,6 +109,7 @@ impl Executor {
             tuning: session.tuning,
             aborted: false,
             last_turn: 0,
+            last_usage: crate::llm::Usage::default(),
         }
     }
 
@@ -159,6 +163,7 @@ impl Executor {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
             });
+            self.last_usage = usage;
         }
 
         Ok(memory)

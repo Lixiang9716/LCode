@@ -7,7 +7,7 @@ use crate::config::LlmConfig;
 use crate::llm::sse::{sse_stream, SseData};
 use crate::llm::{
     ChatMessage, FinishReason, LlmProvider, LlmResponse, StreamEvent, ToolCallRequest,
-    ToolDefinition, Usage,
+    ToolDefinition,
 };
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -224,6 +224,11 @@ fn parse_usage(data: &serde_json::Value) -> Option<crate::llm::Usage> {
         prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
         completion_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
         total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_hit_tokens: usage["prompt_cache_hit_tokens"].as_u64().unwrap_or(0) as u32,
+        cache_miss_tokens: usage["prompt_cache_miss_tokens"].as_u64().unwrap_or(0) as u32,
+        reasoning_tokens: usage["completion_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .unwrap_or(0) as u32,
     })
 }
 
@@ -273,11 +278,7 @@ pub fn parse_response(data: &serde_json::Value) -> anyhow::Result<LlmResponse> {
         _ => FinishReason::Unknown,
     };
 
-    let usage = data.get("usage").map_or(Usage::default(), |u| Usage {
-        prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-        completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
-        total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-    });
+    let usage = parse_usage(data).unwrap_or_default();
 
     Ok(LlmResponse { content, tool_calls, usage, finish_reason })
 }

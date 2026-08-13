@@ -228,6 +228,13 @@ Each value can also be overridden per invocation via its `LCODE_*`
 environment variable, e.g. `LCODE_TEAM_IDLE_INTERVAL_SECS=2 lcode run ...`.
 See `src/config/mod.rs` (`apply_env_overrides`) for the full key list.
 
+## 📊 Token Usage & Cost
+
+每次会话结束后 CLI 打印用量摘要（`📊 Tokens: ...`），并在事件日志中记录 `UsageSummary`
+事件（prompt / completion / cache-hit / reasoning tokens + 预估美元成本，按 DeepSeek
+官方定价表：flash $0.14 输入、$0.0028 缓存命中、$0.28 输出 / 每 1M；pro 档自动识别）。
+缓存命中可显著降低长上下文会话成本。
+
 ## 🔬 DeepSeek API Report
 
 [`docs/deepseek-api-report.md`](docs/deepseek-api-report.md) — 对 DeepSeek API 的全面实测报告：

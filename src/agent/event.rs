@@ -39,6 +39,17 @@ pub enum AgentEvent {
     TurnFinished { turn: u32 },
     /// The task completed with the given turn count.
     TaskFinished { turns: u32, prompt_tokens: u32, completion_tokens: u32 },
+    /// Full usage summary published once after a session: token counts,
+    /// cache hits and the estimated cost in USD.
+    UsageSummary {
+        model: String,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cache_hit_tokens: u32,
+        cache_miss_tokens: u32,
+        reasoning_tokens: u32,
+        cost_usd: f64,
+    },
     /// The task was aborted (user interrupt or max turns).
     TaskAborted { reason: String },
     /// An unrecoverable error occurred.
