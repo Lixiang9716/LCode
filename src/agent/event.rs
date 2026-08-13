@@ -42,6 +42,7 @@ pub enum AgentEvent {
     /// Full usage summary published once after a session: token counts,
     /// cache hits and the estimated cost in USD.
     UsageSummary {
+        agent: String,
         model: String,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -52,6 +53,8 @@ pub enum AgentEvent {
     },
     /// The task was aborted (user interrupt or max turns).
     TaskAborted { reason: String },
+    /// The session's hard cost budget was exceeded (P0 budget gate).
+    BudgetExceeded { spent_usd: f64, budget_usd: f64 },
     /// An unrecoverable error occurred.
     Error { message: String },
 
@@ -74,8 +77,9 @@ pub enum AgentEvent {
     /// A subagent was spawned with the given prompt; `id` correlates
     /// the spawn with its `SubagentCompleted` event.
     SubagentSpawned { id: String, prompt: String },
-    /// A subagent finished and returned its summary.
-    SubagentCompleted { id: String, summary: String },
+    /// A subagent finished and returned its summary with its token usage
+    /// (per-agent aggregation, s04).
+    SubagentCompleted { id: String, summary: String, usage: crate::llm::Usage },
 
     // --- Background tasks (s08) ---
     /// A background command started.

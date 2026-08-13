@@ -19,7 +19,13 @@ fn response(
     finish_reason: FinishReason,
     tool_calls: Option<Vec<ToolCallRequest>>,
 ) -> LlmResponse {
-    LlmResponse { content: content.to_string(), tool_calls, usage: Usage::default(), finish_reason }
+    LlmResponse {
+        content: content.to_string(),
+        tool_calls,
+        server_results: Vec::new(),
+        usage: Usage::default(),
+        finish_reason,
+    }
 }
 
 type SharedProvider = Arc<dyn lcode::llm::LlmProvider>;

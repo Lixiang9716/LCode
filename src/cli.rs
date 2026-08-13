@@ -77,6 +77,30 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+
+    /// Validate the workspace's assets/ registry (sidecar schema,
+    /// sha256 integrity, orphans)
+    Assets {
+        #[command(subcommand)]
+        action: AssetsAction,
+    },
+
+    /// Environment health check (toolchain, config, assets, sandbox,
+    /// balance)
+    Doctor,
+
+    /// Analyze session event logs under .transcripts/
+    Events {
+        /// Only the most recent N event files
+        #[arg(long)]
+        last: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AssetsAction {
+    /// Read-only validation of the assets/ registry
+    Check,
 }
 
 #[derive(Subcommand, Debug)]

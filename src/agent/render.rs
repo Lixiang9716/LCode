@@ -15,10 +15,9 @@ pub fn render_event(event: &AgentEvent) {
             println!("\n🤖 LCode Agent starting...\n");
             println!("Task: {}\n", task);
         }
-        AgentEvent::TurnStarted { .. } => {}
+        AgentEvent::TurnStarted { .. } | AgentEvent::TurnFinished { .. } => {}
         AgentEvent::TextGenerated { content } => println!("\n{}", content),
-        // Streaming deltas print inline (typewriter); the accumulated
-        // text is suppressed by the executor so nothing is printed twice.
+        // Streaming deltas print inline (typewriter); duplicates are suppressed.
         AgentEvent::TextDelta { content } => {
             use std::io::Write;
             print!("{content}");
@@ -36,9 +35,8 @@ pub fn render_event(event: &AgentEvent) {
         }
         AgentEvent::ToolCallFailed { error, .. } => println!("   ❌ {}", error),
         AgentEvent::ToolCallDeclined { .. } => println!("   ⏭️  Skipped (user declined)."),
-        AgentEvent::TurnFinished { .. } => {}
         AgentEvent::TaskFinished { turns, .. } => {
-            println!("\n✅ Task completed in {} turns.", turns);
+            println!("\n✅ Task completed in {} turns.", turns)
         }
         AgentEvent::UsageSummary {
             prompt_tokens,
@@ -47,22 +45,49 @@ pub fn render_event(event: &AgentEvent) {
             reasoning_tokens,
             ..
         } => {
-            let usage = crate::llm::Usage {
-                prompt_tokens: *prompt_tokens,
-                completion_tokens: *completion_tokens,
-                total_tokens: *prompt_tokens + *completion_tokens,
-                cache_hit_tokens: *cache_hit_tokens,
-                cache_miss_tokens: prompt_tokens.saturating_sub(*cache_hit_tokens),
-                reasoning_tokens: *reasoning_tokens,
-            };
-            println!("{}", crate::llm::usage_summary("", &usage));
+            render_usage_summary(
+                *prompt_tokens,
+                *completion_tokens,
+                *cache_hit_tokens,
+                *reasoning_tokens,
+            );
         }
         AgentEvent::TaskAborted { reason } => println!("\n⚠️  {}", reason),
+        AgentEvent::BudgetExceeded { spent_usd, budget_usd } => {
+            render_budget_exceeded(*spent_usd, *budget_usd)
+        }
         AgentEvent::Error { message } => println!("\n❌ {}", message),
 
         // --- Session capabilities (learn-claude-code parity) ---
         event => render_capability_event(event),
     }
+}
+
+/// Render the session usage summary line.
+fn render_usage_summary(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cache_hit_tokens: u32,
+    reasoning_tokens: u32,
+) {
+    let usage = crate::llm::Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: prompt_tokens + completion_tokens,
+        cache_hit_tokens,
+        cache_miss_tokens: prompt_tokens.saturating_sub(cache_hit_tokens),
+        reasoning_tokens,
+    };
+    println!("{}", crate::llm::usage_summary("", &usage));
+}
+
+/// Render the budget-exceeded banner.
+fn render_budget_exceeded(spent_usd: f64, budget_usd: f64) {
+    println!(
+        "\n💸 Budget exceeded: ${} of ${} spent — aborting",
+        crate::llm::format_cost(spent_usd),
+        crate::llm::format_cost(budget_usd)
+    );
 }
 
 /// Render the todo list snapshot.
@@ -100,8 +125,9 @@ fn render_capability_event(event: &AgentEvent) {
         AgentEvent::SubagentSpawned { prompt, .. } => {
             println!("\n🧵 Subagent spawned: {}", truncate(prompt, 100));
         }
-        AgentEvent::SubagentCompleted { summary, .. } => {
+        AgentEvent::SubagentCompleted { summary, usage, .. } => {
             println!("\n🧵 Subagent finished: {}", truncate(summary, 200));
+            print_subagent_usage(usage);
         }
         AgentEvent::BackgroundTaskStarted { id, command } => {
             println!("\n🔄 Background started [{}]: {}", id, truncate(command, 80));
@@ -167,6 +193,13 @@ pub fn spawn_renderer(
     })
 }
 
+/// Print the subagent's token usage line (per-agent aggregation).
+fn print_subagent_usage(usage: &crate::llm::Usage) {
+    let tokens = usage.prompt_tokens + usage.completion_tokens;
+    let cost = crate::llm::format_cost(crate::llm::estimate_cost("", usage));
+    println!("   📊 {tokens} tokens ≈ {cost}");
+}
+
 /// Close the typewriter line when a run of streamed deltas ends.
 fn newline_after_deltas(in_delta: bool, is_delta: bool) -> bool {
     if in_delta && !is_delta {
@@ -204,11 +237,18 @@ async fn read_approval_line() -> bool {
     .unwrap_or(false)
 }
 
-/// Truncate a string to max_len characters, adding "..." if truncated.
+/// Truncate a string to max_len bytes, adding "..." if truncated.
+///
+/// Walks back to a char boundary: `s[..max_len]` would panic when
+/// `max_len` lands inside a multi-byte character (search results are
+/// untrusted remote text and make that likely).
 fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
-    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
-    &s[..boundary]
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

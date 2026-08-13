@@ -24,6 +24,7 @@ fn llm_reply(content: &str) -> LlmResponse {
     LlmResponse {
         content: content.to_string(),
         tool_calls: None,
+        server_results: Vec::new(),
         usage: Usage::default(),
         finish_reason: FinishReason::Stop,
     }

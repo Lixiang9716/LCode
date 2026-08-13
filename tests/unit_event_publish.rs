@@ -100,6 +100,7 @@ async fn subagent_publishes_spawned_and_completed() {
         Ok(LlmResponse {
             content: "done".to_string(),
             tool_calls: None,
+            server_results: Vec::new(),
             usage: Usage::default(),
             finish_reason: FinishReason::Stop,
         })

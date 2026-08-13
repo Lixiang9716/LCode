@@ -85,6 +85,18 @@ pub async fn auto_compact(
     workspace: &Path,
     cfg: &crate::config::CompactionConfig,
 ) -> anyhow::Result<String> {
+    Ok(auto_compact_with_usage(messages, provider, focus, workspace, cfg).await?.0)
+}
+
+/// [`auto_compact`] with the summarizer call's usage, so the session
+/// total includes internal utility calls.
+pub(crate) async fn auto_compact_with_usage(
+    messages: &mut Vec<ChatMessage>,
+    provider: &dyn LlmProvider,
+    focus: Option<&str>,
+    workspace: &Path,
+    cfg: &crate::config::CompactionConfig,
+) -> anyhow::Result<(String, crate::llm::Usage)> {
     // 1. Persist the full transcript as JSONL under `.transcripts/`.
     let transcripts_dir = workspace.join(".transcripts");
     std::fs::create_dir_all(&transcripts_dir)?;
@@ -122,6 +134,7 @@ pub async fn auto_compact(
     prompt.push_str("\n\n");
     prompt.push_str(&serialized[tail_start..]);
     let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
+    let usage = response.usage.clone();
     let summary = if response.content.trim().is_empty() {
         "No summary generated.".to_string()
     } else {
@@ -137,8 +150,9 @@ pub async fn auto_compact(
         summary, transcript_str
     )));
 
-    // 4. Return the summary text for the caller to surface.
-    Ok(summary)
+    // 4. Return the summary text for the caller to surface, plus the
+    //    summarizer call's usage.
+    Ok((summary, usage))
 }
 
 /// Tool: `compact` — the model explicitly triggers compaction.

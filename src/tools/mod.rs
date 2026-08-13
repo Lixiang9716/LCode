@@ -1,10 +1,9 @@
 //! Tool system — the agent's interface to the outside world.
 //!
 //! Tools give the agent the ability to:
-//! - Read, write, and edit files
+//! - Read and write files (write doubles as the in-place editor)
 //! - Search the codebase
 //! - Execute shell commands
-//! - Fetch web content
 //!
 //! Each tool implements a standard interface for discovery (definition)
 //! and execution.
@@ -13,8 +12,11 @@ use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod fetch;
 pub mod file;
-pub mod file_edit;
+pub mod guard;
+pub mod sandbox;
+pub mod scrub;
 pub mod search;
 pub mod shell;
 
@@ -84,8 +86,6 @@ impl ToolRegistry {
         // Register built-in tools
         registry.register(Box::new(file::ReadFileTool::new(config)?));
         registry.register(Box::new(file::WriteFileTool::new(config)?));
-        registry.register(Box::new(file_edit::EditFileTool::new(config)?));
-        registry.register(Box::new(file::ListDirTool::new(config)?));
         registry.register(Box::new(search::GrepTool::new(config)?));
         registry.register(Box::new(search::GlobTool::new(config)?));
         registry.register(Box::new(shell::ShellTool::new(config)?));
@@ -110,6 +110,7 @@ impl ToolRegistry {
                     description: t.description().to_string(),
                     parameters: t.parameters(),
                 },
+                server: None,
             })
             .collect()
     }

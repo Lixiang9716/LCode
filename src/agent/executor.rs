@@ -7,19 +7,19 @@
 //! event stream.
 
 use crate::agent::event::AgentEvent;
+use crate::agent::executor_hooks::check_budget;
 use crate::agent::prompt;
 use crate::agent::runtime::{AgentRuntime, ApprovalDecision};
 use crate::agent::{
     BackgroundManager, ConversationMemory, CronScheduler, HookContext, HookDecision, HookPoint,
     HookRegistry, McpRegistry, Planner, TodoManager,
 };
-use crate::llm::{FinishReason, LlmProvider};
+use crate::llm::LlmProvider;
 use crate::tools::{ToolRegistry, ToolResult};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Loop control signal returned by response/tool handlers.
-enum LoopControl {
+pub(crate) enum LoopControl {
     /// Keep running the agent loop.
     Continue,
     /// Stop the loop (task finished).
@@ -48,6 +48,13 @@ pub struct SessionState {
     /// User-tunable runtime parameters (compaction/team/subagent/...).
     /// `None` keeps the built-in defaults (tests).
     pub tuning: Option<Arc<crate::config::RuntimeTuning>>,
+    /// Provider for internal utility calls (compaction summaries, memory
+    /// extraction): thinking mode is forced off on it by default (P0-1).
+    /// `None` (tests) falls back to the main provider.
+    pub internal_provider: Option<Box<dyn LlmProvider>>,
+    /// Server-side `web_search` declaration for DeepSeek's
+    /// Anthropic-compatible endpoint (P1-2); `None` disables it.
+    pub web_search: Option<crate::llm::ServerToolSpec>,
 }
 
 /// The executor drives the agent loop.
@@ -73,6 +80,14 @@ pub struct Executor {
     pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
     pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
     pub(crate) tuning: Option<Arc<crate::config::RuntimeTuning>>,
+    /// Provider for internal utility calls; `None` falls back to
+    /// [`Self::provider`] (tests).
+    pub(crate) internal_provider: Option<Box<dyn LlmProvider>>,
+    /// Server-side web_search declaration (appended to the tool pool).
+    pub(crate) web_search: Option<crate::llm::ServerToolSpec>,
+    /// A test command failed in the previous turn (test-until-green
+    /// reminder pending).
+    pub(crate) test_failed: bool,
     /// Whether the session ended via abort (e.g. max turns) instead
     /// of finishing normally; surfaced to the CLI for the exit code.
     pub(crate) aborted: bool,
@@ -107,6 +122,9 @@ impl Executor {
             memory_store: session.memory_store,
             team_bus: session.team_bus,
             tuning: session.tuning,
+            internal_provider: session.internal_provider,
+            web_search: session.web_search,
+            test_failed: false,
             aborted: false,
             last_turn: 0,
             last_usage: crate::llm::Usage::default(),
@@ -140,9 +158,11 @@ impl Executor {
 
         self.runtime.publish(AgentEvent::SessionStarted { task: task.to_string() });
 
-        let (aborted, turn, usage) = self.run_loop(&mut memory, max_turns, stream).await?;
+        let (aborted, total_turns, total_usage) =
+            self.run_with_review(task, planner, &mut memory, max_turns, stream).await?;
         self.aborted = aborted;
-        self.last_turn = turn;
+        self.aborted = aborted;
+        self.last_turn = total_turns;
 
         if !aborted {
             // G8: Stop hook (policy/observation at session end)
@@ -155,15 +175,16 @@ impl Executor {
             self.hooks.run(&stop_ctx);
 
             // G3 (s09): at session end, extract durable memories from the
-            // conversation and consolidate the memory store.
+            // conversation and consolidate the memory store. Their usage
+            // accumulates into the session total (`last_usage`).
+            self.last_usage = total_usage;
             self.persist_memories(&memory).await;
 
             self.runtime.publish(AgentEvent::TaskFinished {
-                turns: turn,
-                prompt_tokens: usage.prompt_tokens,
-                completion_tokens: usage.completion_tokens,
+                turns: total_turns,
+                prompt_tokens: self.last_usage.prompt_tokens,
+                completion_tokens: self.last_usage.completion_tokens,
             });
-            self.last_usage = usage;
         }
 
         Ok(memory)
@@ -222,7 +243,7 @@ impl Executor {
 
     /// The main agent loop: turns of inject → compact → chat → handle
     /// until stop, abort or max turns. Returns (aborted, final turn).
-    async fn run_loop(
+    pub(crate) async fn run_loop(
         &mut self,
         memory: &mut ConversationMemory,
         max_turns: u32,
@@ -231,6 +252,7 @@ impl Executor {
         let mut turn = 0u32;
         let mut aborted = false;
         let mut total_usage = crate::llm::Usage::default();
+        let mut budget_warned = false;
         loop {
             if turn >= max_turns {
                 self.runtime.publish(AgentEvent::TaskAborted {
@@ -248,31 +270,25 @@ impl Executor {
             // Turn-start injections (s08 background, s14 cron, s15 inbox).
             crate::agent::executor_hooks::inject_turn_start(self, memory);
 
-            // Dynamic tool pool (s19) + context compaction (s06).
+            // Tool pool (s19) + compaction (s06); summarizer usage joins the total.
             let tool_defs = self.tool_pool();
-            self.maybe_compact(memory).await?;
+            self.maybe_compact(memory, &mut total_usage).await?;
 
-            let context = memory.get_context();
-            let response = match self.call_llm(&context, &tool_defs, stream).await {
-                Ok(resp) => resp,
-                Err(e) if e.to_string().contains(crate::agent::retry::PROMPT_TOO_LONG_MARKER) => {
-                    // Reactive compaction (s11 path 2): mark and continue;
-                    // the next turn's maybe_compact compacts then retries.
-                    self.prompt_too_long.store(true, Ordering::SeqCst);
-                    let msg = format!("Context too long — compacting and retrying: {}", e);
-                    self.runtime.publish(AgentEvent::Error { message: msg });
-                    continue;
-                }
-                Err(e) => {
-                    // Unrecoverable call failure: publish the error so
-                    // observers (audit log) see why the session died,
-                    // then propagate.
-                    self.runtime.publish(AgentEvent::Error { message: e.to_string() });
-                    return Err(e);
-                }
+            let Some(response) = crate::agent::executor_hooks::call_llm_with_recovery(
+                self, memory, &tool_defs, stream,
+            )
+            .await?
+            else {
+                continue;
             };
 
             crate::agent::executor_hooks::accumulate_usage(&mut total_usage, &response.usage);
+
+            // Budget gate (P0): warn at the ratio, abort at the cap.
+            if check_budget(self, &mut budget_warned, &total_usage, memory) {
+                aborted = true;
+                break;
+            }
 
             let finished = match self.handle_response(response, memory, stream).await? {
                 LoopControl::Stop => true,
@@ -293,77 +309,9 @@ impl Executor {
         Ok((aborted, turn, total_usage))
     }
 
-    /// Handle a single LLM response.
-    ///
-    /// Executes any requested tool calls (recording results in memory) or
-    /// publishes the final answer. Returns the loop control signal.
-    ///
-    /// `text_already_published` suppresses the one-shot text publish: the
-    /// streaming path emits the text as it arrives, so re-publishing the
-    /// accumulated block would print it twice in the REPL.
-    async fn handle_response(
-        &mut self,
-        response: crate::llm::LlmResponse,
-        memory: &mut ConversationMemory,
-        text_already_published: bool,
-    ) -> anyhow::Result<LoopControl> {
-        match response.finish_reason {
-            FinishReason::ToolCalls => {
-                if let Some(ref tool_calls) = response.tool_calls {
-                    // Publish the assistant's text content if any (in
-                    // streaming mode this was already streamed or shown
-                    // as a preview before the fallback chat call).
-                    publish_text_unless(&self.runtime, &response.content, text_already_published);
-
-                    // Add the assistant message with tool calls to memory
-                    memory.add_assistant_with_tool_calls(response.content, tool_calls.clone());
-
-                    // Execute each tool call
-                    self.execute_tool_calls(tool_calls, memory).await
-                } else {
-                    Ok(LoopControl::Continue)
-                }
-            }
-            FinishReason::Stop | FinishReason::Length => {
-                // Final response — no more tool calls
-                publish_text_unless(&self.runtime, &response.content, text_already_published);
-                memory.add_assistant(response.content);
-                Ok(LoopControl::Stop)
-            }
-            FinishReason::ContentFilter => {
-                self.runtime.publish(AgentEvent::Error {
-                    message: "Response blocked by content filter.".to_string(),
-                });
-                Ok(LoopControl::Stop)
-            }
-            FinishReason::Unknown => {
-                // Assume stop — just output the content
-                publish_text_unless(&self.runtime, &response.content, text_already_published);
-                Ok(LoopControl::Stop)
-            }
-        }
-    }
-
-    /// Execute a sequence of tool calls, recording each result in memory.
-    ///
-    /// Stops at the first abort signal from the user.
-    async fn execute_tool_calls(
-        &mut self,
-        tool_calls: &[crate::llm::ToolCallRequest],
-        memory: &mut ConversationMemory,
-    ) -> anyhow::Result<LoopControl> {
-        for tc in tool_calls {
-            match self.handle_tool_call(tc, memory).await? {
-                LoopControl::Abort => return Ok(LoopControl::Abort),
-                LoopControl::Stop | LoopControl::Continue => {}
-            }
-        }
-        Ok(LoopControl::Continue)
-    }
-
     /// Handle a single tool call: request approval via the event bus,
     /// execute, and publish the result.
-    async fn handle_tool_call(
+    pub(crate) async fn handle_tool_call(
         &mut self,
         tc: &crate::llm::ToolCallRequest,
         memory: &mut ConversationMemory,
@@ -374,12 +322,12 @@ impl Executor {
         // Parse arguments
         let parsed_args: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
 
-        // Publish the tool call request with its approval requirement
+        // Publish the tool call request with its approval requirement.
         self.runtime.publish(AgentEvent::ToolCallRequested {
             id: tc.id.clone(),
             name: tool_name.clone(),
             arguments: parsed_args.clone(),
-            requires_approval: !self.auto_approve,
+            requires_approval: requires_approval_for(self, tool_name, &parsed_args),
         });
 
         // PreToolUse hooks: a Block decision cancels the call (s20)
@@ -407,8 +355,9 @@ impl Executor {
         tool_call_id: &str,
         memory: &mut ConversationMemory,
     ) -> anyhow::Result<LoopControl> {
-        // Request approval through the command channel (non-blocking stdin)
-        if !self.auto_approve {
+        // Request approval through the command channel (non-blocking
+        // stdin); URL fetches may force approval (see helper below).
+        if requires_approval_for(self, tool_name, &parsed_args) {
             match self.runtime.await_approval(tool_call_id).await {
                 ApprovalDecision::Approved => {}
                 ApprovalDecision::Rejected => {
@@ -433,24 +382,25 @@ impl Executor {
             Some(Err(e)) => Err(e),
             None => self.registry.execute(tool_name, &parsed_args),
         };
-        match result {
-            Ok(result) => {
-                let result_str = format!("{}", result);
-                self.runtime.publish(AgentEvent::ToolCallExecuted {
-                    id: tool_call_id.to_string(),
-                    output: result_str.clone(),
-                });
-                memory.add_tool_result(result_str, tool_call_id.to_string());
-            }
-            Err(e) => {
-                let error_str = format!("Error executing tool: {}", e);
-                self.runtime.publish(AgentEvent::ToolCallFailed {
-                    id: tool_call_id.to_string(),
-                    error: error_str.clone(),
-                });
-                memory.add_tool_result(error_str, tool_call_id.to_string());
-            }
+        // One output string for the event and the conversation; P0
+        // test-until-green notes failing test commands below.
+        let (output, ok) = match result {
+            Ok(result) => (format!("{}", result), true),
+            Err(e) => (format!("Error executing tool: {}", e), false),
+        };
+        if ok {
+            self.runtime.publish(AgentEvent::ToolCallExecuted {
+                id: tool_call_id.to_string(),
+                output: output.clone(),
+            });
+        } else {
+            self.runtime.publish(AgentEvent::ToolCallFailed {
+                id: tool_call_id.to_string(),
+                error: output.clone(),
+            });
         }
+        memory.add_tool_result(output.clone(), tool_call_id.to_string());
+        self.note_shell_outcome(tool_name, &parsed_args, &output, ok);
 
         // PostToolUse hook (observability / policy follow-up)
         let post_ctx = HookContext {
@@ -465,27 +415,27 @@ impl Executor {
     }
 }
 
-/// Publish assistant text as a [`AgentEvent::TextGenerated`] event when
-/// non-empty.
-fn publish_text(runtime: &AgentRuntime, content: &str) {
-    if !content.is_empty() {
-        runtime.publish(AgentEvent::TextGenerated { content: content.to_string() });
-    }
-}
-
-/// [`publish_text`], unless the text was already published (streaming
-/// mode emits it delta-by-delta, so a second one-shot publish would print
-/// it twice in the REPL).
-fn publish_text_unless(runtime: &AgentRuntime, content: &str, already_published: bool) {
-    if !already_published {
-        publish_text(runtime, content);
-    }
-}
-
 /// Publish a task-abort event and mark the session as aborted.
 fn abort_session(runtime: &AgentRuntime, aborted: &mut bool) {
     runtime.publish(AgentEvent::TaskAborted { reason: "Aborted by user".to_string() });
     *aborted = true;
+}
+
+/// Does this tool invocation require approval? Always when
+/// auto-approve is off; URL fetches also force it while
+/// `tools.network_requires_approval` is on (default).
+fn requires_approval_for(executor: &Executor, tool_name: &str, args: &serde_json::Value) -> bool {
+    !executor.auto_approve
+        || (is_network_call(tool_name, args)
+            && executor.tuning.as_ref().is_some_and(|t| t.network_requires_approval))
+}
+
+/// Is this invocation a network fetch (write_file `url` or read_file
+/// with an http(s) path)?
+fn is_network_call(tool_name: &str, args: &serde_json::Value) -> bool {
+    args.get("url").is_some()
+        || (tool_name == "read_file"
+            && args["path"].as_str().is_some_and(crate::tools::fetch::is_http_url))
 }
 
 /// Record a user-declined tool call in the conversation memory.

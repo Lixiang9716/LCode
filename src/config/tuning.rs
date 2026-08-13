@@ -133,6 +133,16 @@ pub struct MemoryConfig {
     /// Dialogue characters fed to extraction
     #[serde(default = "default_max_extract_chars")]
     pub max_extract_chars: usize,
+
+    /// Lock extraction/consolidation replies to JSON by forcing the
+    /// reply to start with `[` (DeepSeek beta prefix completion). The
+    /// model cannot then preamble with prose, so the JSON fence parses
+    /// reliably. Requires the OpenAI-format DeepSeek endpoint
+    /// (`provider = "openai_compatible"` + `api_base =
+    /// "https://api.deepseek.com"`); other endpoints reject prefix
+    /// requests and the extraction falls back to the plain prompt.
+    #[serde(default)]
+    pub json_lock: bool,
 }
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -140,6 +150,7 @@ impl Default for MemoryConfig {
             consolidate_threshold: default_consolidate_threshold(),
             max_relevant: default_max_relevant(),
             max_extract_chars: default_max_extract_chars(),
+            json_lock: false,
         }
     }
 }
@@ -280,6 +291,21 @@ pub struct RuntimeTuning {
     pub events: EventsConfig,
     pub todo: TodoConfig,
     pub todo_nag_after_turns: u32,
+    /// URL fetches (read_file/write_file) ignore auto_approve and go
+    /// through the approval channel when true.
+    pub network_requires_approval: bool,
+    /// Hard cost cap for the session (None = no cap).
+    pub budget_total_usd: Option<f64>,
+    /// Spend ratio that triggers the one-shot budget warning.
+    pub budget_warning_ratio: f64,
+    /// Model used for cost estimation (pricing tier lookup).
+    pub cost_model: String,
+    /// Fix-and-rerun reminder after failing test commands.
+    pub test_until_green: bool,
+    /// Self-review pass before finishing.
+    pub self_review: bool,
+    /// Restart rounds allowed for self-review fixes.
+    pub self_review_max_rounds: u32,
 }
 
 impl RuntimeTuning {
@@ -295,6 +321,13 @@ impl RuntimeTuning {
             events: cfg.events.clone(),
             todo: cfg.todo.clone(),
             todo_nag_after_turns: cfg.agent.todo_nag_after_turns,
+            network_requires_approval: cfg.tools.network_requires_approval,
+            budget_total_usd: cfg.llm.budget_total_usd,
+            budget_warning_ratio: cfg.llm.budget_warning_ratio,
+            cost_model: cfg.llm.model.clone(),
+            test_until_green: cfg.agent.test_until_green,
+            self_review: cfg.agent.self_review,
+            self_review_max_rounds: cfg.agent.self_review_max_rounds,
         }
     }
 }

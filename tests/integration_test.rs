@@ -108,13 +108,17 @@ impl Match for AuthHeaderCapture {
 fn provider_for(server: &MockServer) -> OpenAiProvider {
     let config = LlmConfig {
         provider: "openai".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "gpt-4o-mini".to_string(),
         api_base: Some(format!("{}/v1", server.uri())),
         max_tokens: 256,
         temperature: 0.0,
         fallback_model: None,
         thinking_disabled: false,
+        reasoning_effort: None,
+        internal_thinking_disabled: true,
+        budget_total_usd: None,
+        budget_warning_ratio: 0.8,
     };
     OpenAiProvider::new(&config).expect("provider should validate with a non-empty api_key")
 }
@@ -301,7 +305,7 @@ enable_web = false
 
     // Defaults are "anthropic" / "claude-sonnet-4-20250514" / 8192 / 0.3.
     assert_eq!(cfg.llm.provider, "openai");
-    assert_eq!(cfg.llm.api_key, "sk-test-123");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key), "sk-test-123");
     assert_eq!(cfg.llm.model, "gpt-4o");
     assert_eq!(cfg.llm.max_tokens, 4096);
     assert_eq!(cfg.llm.temperature, 0.7);
@@ -385,7 +389,7 @@ fn tool_registry_registers_all_builtin_tools() {
     let registry = ToolRegistry::new(&Config::default()).expect("registry");
     let names = registry.list_tools();
 
-    for expected in ["read_file", "write_file", "edit_file", "list_dir", "grep", "glob", "shell"] {
+    for expected in ["read_file", "write_file", "grep", "glob", "shell"] {
         assert!(
             names.contains(&expected),
             "expected tool '{expected}' to be registered, got: {names:?}"
@@ -393,8 +397,8 @@ fn tool_registry_registers_all_builtin_tools() {
     }
 }
 
-/// End-to-end workflow: write_file → read_file → edit_file → grep, all
-/// operating on a temp directory through the `ToolRegistry`.
+/// End-to-end workflow: write_file → read_file → write_file(replace) →
+/// grep, all operating on a temp directory through the `ToolRegistry`.
 #[test]
 #[serial]
 fn file_tools_end_to_end_write_read_edit_grep() {
@@ -424,18 +428,17 @@ fn file_tools_end_to_end_write_read_edit_grep() {
     assert!(result.output.contains("hello world"));
     assert!(result.output.contains("second line"));
 
-    // edit_file replaces the unique match
+    // write_file replace replaces the unique match (edit semantics)
     let result = registry
         .execute(
-            "edit_file",
+            "write_file",
             &serde_json::json!({
                 "path": "notes.txt",
-                "old_string": "hello world",
-                "new_string": "hello rust"
+                "replace": { "old_string": "hello world", "new_string": "hello rust" }
             }),
         )
-        .expect("edit_file should run");
-    assert!(result.success, "edit_file failed: {}", result.output);
+        .expect("write_file replace should run");
+    assert!(result.success, "write_file replace failed: {}", result.output);
 
     // read_file confirms the edit
     let result = registry

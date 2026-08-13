@@ -28,6 +28,7 @@ fn response(
     LlmResponse {
         content: content.to_string(),
         tool_calls,
+        server_results: Vec::new(),
         usage: Usage::default(),
         finish_reason: finish,
     }
@@ -258,6 +259,8 @@ async fn recorder_log_covers_every_session_event() {
         memory_store: Some(Arc::new(MemoryStore::new(&workspace).expect("memory store"))),
         team_bus: Some(Arc::new(MessageBus::new(&workspace))),
         tuning: None,
+        internal_provider: None,
+        web_search: None,
     };
 
     let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);

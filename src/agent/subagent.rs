@@ -48,12 +48,13 @@ pub async fn run_subagent(
             prompt: prompt.to_string(),
         });
     }
-    let summary =
+    let (summary, usage) =
         run_subagent_loop(prompt, provider, registry, max_turns, hooks, subagent_cfg).await?;
     if let Some(tx) = &events {
         let _ = tx.send(crate::agent::AgentEvent::SubagentCompleted {
             id: subagent_id,
             summary: summary.clone(),
+            usage,
         });
     }
     Ok(summary)
@@ -68,18 +69,22 @@ async fn run_subagent_loop(
     max_turns: u32,
     hooks: Option<Arc<HookRegistry>>,
     subagent_cfg: &crate::config::SubagentConfig,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, crate::llm::Usage)> {
     let mut messages = vec![ChatMessage::user(prompt.to_string())];
     let tool_defs = registry.definitions();
     let turns = max_turns.clamp(1, subagent_cfg.max_turns);
+    let mut total_usage = crate::llm::Usage::default();
 
     for _ in 0..turns {
         let response = provider.chat(&messages, &tool_defs).await?;
+        crate::agent::usage_tracking::accumulate_usage(&mut total_usage, &response.usage);
 
         if response.finish_reason != FinishReason::ToolCalls {
             // Stop / Length / filter: the final text is the summary.
             let text = response.content.trim();
-            return Ok(if text.is_empty() { "(no summary)".to_string() } else { text.to_string() });
+            let summary =
+                if text.is_empty() { "(no summary)".to_string() } else { text.to_string() };
+            return Ok((summary, total_usage));
         }
 
         // Record the assistant message (with its tool calls) so the model
@@ -122,7 +127,7 @@ async fn run_subagent_loop(
     }
 
     // No final answer within the turn budget.
-    Ok("(no summary)".to_string())
+    Ok(("(no summary)".to_string(), total_usage))
 }
 
 /// Run several subagents in parallel (fan-out, #11).

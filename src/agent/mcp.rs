@@ -194,6 +194,7 @@ fn tool_definition(server: &McpServer, tool_name: &str) -> crate::llm::ToolDefin
             description: format!("{description}{annotation}"),
             parameters: parameters.clone(),
         },
+        server: None,
     }
 }
 

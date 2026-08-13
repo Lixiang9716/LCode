@@ -132,3 +132,38 @@ curl -s --noproxy '*' https://api.deepseek.com/chat/completions \
 ```
 
 > 本报告基于 2026-08-13 实测；DeepSeek 服务端行为可能随版本演进，重跑验证请以上述复现命令为准。
+
+## 附录：P0/P1 集成实施发现（2026-08-13）
+
+实施 reasoning_effort / 内部关思考 / prefix 续写 / 服务端 web_search 期间的真实 API 实测补充：
+
+1. **[major] thinking 块必须回传**（Anthropic 兼容端点）：thinking 开启时，后续请求中每条 assistant
+   消息必须带 `thinking` 块，否则 400 `content[].thinking in the thinking mode must be
+   passed back`。**空占位块 `{"type":"thinking","thinking":""}` 即可通过**——LCode 不回传真隐藏推理
+   （避免逐轮重复计费），注入空占位满足校验（`inject_thinking`，仅 deepseek 端点 + thinking 开启时）。
+2. **服务端 web_search 实测形状**：`server_tool_use` + `web_search_tool_result` 同消息返回；
+   结果块为 `web_search_result {title, url, encrypted_content}`（内容加密，客户端不可读）。
+   LCode 规范化回放（普通 tool_use/tool_result 配对 + 标题/URL 文本）被端点接受，模型可继续作答。
+3. **prefix beta 实测**：`/beta/chat/completions` + 末尾 assistant 消息带 `prefix: true`；
+   `stop` 参数可用。强制 `[` 开头 JSON 成功。
+4. **reasoning_effort=low 实测**：顶层字段生效（20 reasoning tokens / 31 total）；
+   `thinking: {type: disabled}` 与其互斥（disabled 优先）。
+5. **[major] 用量聚合漏字段**：lead 会话的 `accumulate_usage` 只累加 prompt/completion，
+   cache-hit 与 reasoning 恒为 0——已修复为全字段聚合，缓存命中的成本节省得以显示
+   （同任务 $0.0018 → $0.0007）。
+
+## 附录 2：Review 修复批次实测（2026-08-13 二轮）
+
+5 个并行 review agent 的判决修复后，补充实测（真实 API）：
+
+1. **[major] Anthropic 端点 effort 字段名纠正**：`output_config: {effort: low}` 是唯一生效的档位
+   旋钮——实测 `output_config low` 输入 9 tokens vs 默认/`reasoning` 顶层字段 88 tokens
+   （thinking 系统模板被移除）；顶层 `reasoning: {type, effort}` 被端点**容忍但忽略**
+   （行为等于默认 high）。LCode 已改为 `output_config` 并加测试固化。
+2. **reasoning_effort 端点门控**：原生 OpenAI 取值（minimal/low/medium/high）与 DeepSeek
+   （low/high/max）不一致，minimax/glm 不识别该字段——两格式 provider 现在都只在
+   deepseek 端点上发送档位参数。
+3. **high vs low 单次对照**（openai 格式，同 prompt）：default 107 rt / low 284 rt(截断)
+   / high 299 rt——单样本噪声大，不宜引用百分比结论；README 改用"模板 88→9 输入 token"
+   的可复现指标。
+4. 内部调用关思考的 48 vs 531 tokens 出自挖掘轮实测（压缩/提取任务，thinking 开 vs 关）。

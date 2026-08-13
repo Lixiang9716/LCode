@@ -12,8 +12,11 @@
 
 pub mod agent;
 pub mod app;
+pub mod assets;
 pub mod cli;
 pub mod config;
+pub mod doctor;
+pub mod events;
 pub mod llm;
 pub mod repl;
 pub mod tools;

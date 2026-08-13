@@ -28,7 +28,6 @@
 //! `tokio::task::block_in_place` + `Handle::block_on` (see
 //! `subagent.rs`).
 
-use crate::llm::ChatMessage;
 use std::path::{Path, PathBuf};
 
 /// Directory holding memory files (relative to the workspace).
@@ -40,9 +39,9 @@ pub const CONSOLIDATE_THRESHOLD: usize = 10;
 /// Maximum memories injected per relevance query.
 const MAX_RELEVANT: usize = 5;
 /// Catalog size fed to the consolidation model.
-const MAX_CONSOLIDATE_CHARS: usize = 16_000;
+pub(crate) const MAX_CONSOLIDATE_CHARS: usize = 16_000;
 /// Query size fed to the relevance model.
-const MAX_QUERY_CHARS: usize = 2000;
+pub(crate) const MAX_QUERY_CHARS: usize = 2000;
 
 /// A single memory file with its parsed metadata.
 #[derive(Debug, Clone)]
@@ -60,10 +59,12 @@ pub struct MemoryFile {
 /// so it is cheap to share via `Arc` and can be rebuilt at any time.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    dir: PathBuf,
-    consolidate_threshold: usize,
-    max_relevant: usize,
-    max_extract_chars: usize,
+    pub(crate) dir: PathBuf,
+    pub(crate) consolidate_threshold: usize,
+    pub(crate) max_relevant: usize,
+    pub(crate) max_extract_chars: usize,
+    /// Lock extraction replies to JSON via prefix completion (P1-1).
+    pub(crate) json_lock: bool,
 }
 
 impl MemoryStore {
@@ -85,6 +86,7 @@ impl MemoryStore {
             consolidate_threshold: config.consolidate_threshold,
             max_relevant: config.max_relevant,
             max_extract_chars: config.max_extract_chars,
+            json_lock: config.json_lock,
         })
     }
 
@@ -169,146 +171,9 @@ impl MemoryStore {
         std::fs::read_to_string(path).unwrap_or_default().trim().to_string()
     }
 
-    /// Extract worth-remembering facts from a conversation and persist
-    /// them as new memory files. Returns how many memories were written.
-    ///
-    /// The model receives the existing catalog (to avoid duplicates) and
-    /// replies with a JSON array of `{name, description, tags, body}`
-    /// items.
-    pub async fn extract(
-        &self,
-        conversation: &str,
-        provider: &dyn crate::llm::LlmProvider,
-    ) -> anyhow::Result<usize> {
-        let dialogue = conversation.trim();
-        if dialogue.is_empty() {
-            return Ok(0);
-        }
-        let prompt = format!(
-            "Extract user preferences, constraints, or project facts from \
-             this dialogue.\nReturn a JSON array. Each item: \
-             {{name, description, tags, body}}.\n\
-             - name: short kebab-case identifier (e.g. 'prefers-tabs')\n\
-             - description: one-line summary for index lookup\n\
-             - tags: array of strings, optional\n\
-             - body: full detail in markdown\n\
-             If nothing new or already covered by existing memories, \
-             return [].\n\n\
-             Existing memories:\n{}\n\n\
-             Dialogue:\n{}",
-            self.existing_catalog(),
-            truncate(dialogue, self.max_extract_chars)
-        );
-        let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
-        Ok(self.write_items(&extract_json_array(&response.content)).len())
-    }
-
-    /// Merge duplicate/stale memories once the file count reaches
-    /// [`CONSOLIDATE_THRESHOLD`]. The model receives every memory file
-    /// and returns a replacement JSON array; stale files are dropped and
-    /// the index rebuilt. Returns the memory count after consolidation
-    /// (unchanged when below the threshold or on an unusable reply).
-    pub async fn consolidate(
-        &self,
-        provider: &dyn crate::llm::LlmProvider,
-    ) -> anyhow::Result<usize> {
-        let files = self.list();
-        if files.len() < self.consolidate_threshold {
-            return Ok(files.len());
-        }
-        let catalog = files
-            .iter()
-            .map(|f| {
-                format!(
-                    "## {}\nname: {}\ndescription: {}\n{}",
-                    f.filename, f.name, f.description, f.body
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let prompt = format!(
-            "Consolidate the following memory files. Rules:\n\
-             1. Merge duplicates into one\n\
-             2. Remove outdated or contradicted memories\n\
-             3. Keep the total under 30 memories\n\
-             4. Preserve important user preferences above all\n\
-             Return a JSON array. Each item: \
-             {{name, description, tags, body}}.\n\n\
-             {}",
-            truncate(&catalog, MAX_CONSOLIDATE_CHARS)
-        );
-        let response = provider.chat(&[ChatMessage::user(prompt)], &[]).await?;
-        let written = self.write_items(&extract_json_array(&response.content));
-        if written.is_empty() {
-            // Never wipe the store on an unusable reply.
-            return Ok(files.len());
-        }
-        for f in files {
-            if !written.contains(&f.filename) {
-                let _ = std::fs::remove_file(self.dir.join(&f.filename));
-            }
-        }
-        self.rebuild_index();
-        Ok(written.len())
-    }
-
-    /// Select memories relevant to `query`: an LLM picks catalog indices
-    /// (falling back to keyword matching on name + description when the
-    /// reply is unusable). Returns filenames, at most [`MAX_RELEVANT`].
-    pub async fn relevant(
-        &self,
-        query: &str,
-        provider: &dyn crate::llm::LlmProvider,
-    ) -> anyhow::Result<Vec<String>> {
-        let files = self.list();
-        if files.is_empty() || query.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        let catalog = files
-            .iter()
-            .enumerate()
-            .map(|(i, f)| format!("{i}: {} — {}", f.name, f.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let prompt = format!(
-            "Given the recent conversation and the memory catalog below, \
-             select the indices of memories that are clearly relevant. \
-             Return ONLY a JSON array of integers, e.g. [0, 3]. If none \
-             are relevant, return [].\n\n\
-             Recent conversation:\n{}\n\n\
-             Memory catalog:\n{catalog}",
-            truncate(query, MAX_QUERY_CHARS)
-        );
-        let indices: Vec<usize> = match provider.chat(&[ChatMessage::user(prompt)], &[]).await {
-            Ok(response) => extract_json_array(&response.content)
-                .into_iter()
-                .filter_map(|v| v.as_u64())
-                .map(|i| i as usize)
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        let mut selected = select_indices(&files, &indices);
-        if !selected.is_empty() {
-            return Ok(selected);
-        }
-        // Fallback: keyword matching on name + description.
-        let keywords: Vec<String> =
-            query.split_whitespace().map(|w| w.to_lowercase()).filter(|w| w.len() > 3).collect();
-        for f in &files {
-            if selected.len() >= self.max_relevant {
-                break;
-            }
-            let haystack = format!("{} {}", f.name, f.description).to_lowercase();
-            if keywords.iter().any(|k| haystack.contains(k)) {
-                selected.push(f.filename.clone());
-            }
-        }
-        Ok(selected)
-    }
-
     /// One-line `- name: description` catalog used as the model's
     /// dedupe aid during extraction.
-    fn existing_catalog(&self) -> String {
+    pub(crate) fn existing_catalog(&self) -> String {
         let lines: Vec<String> =
             self.list().iter().map(|f| format!("- {}: {}", f.name, f.description)).collect();
         if lines.is_empty() {
@@ -320,7 +185,7 @@ impl MemoryStore {
 
     /// Persist validated items returned by the model; returns the
     /// filenames written (empty when nothing was usable).
-    fn write_items(&self, items: &[serde_json::Value]) -> Vec<String> {
+    pub(crate) fn write_items(&self, items: &[serde_json::Value]) -> Vec<String> {
         let mut written = Vec::new();
         for item in items {
             let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -341,7 +206,7 @@ impl MemoryStore {
 
 /// Map model-chosen indices to memory filenames (bounded by
 /// [`MAX_RELEVANT`], out-of-range indices ignored).
-fn select_indices(files: &[MemoryFile], indices: &[usize]) -> Vec<String> {
+pub(crate) fn select_indices(files: &[MemoryFile], indices: &[usize]) -> Vec<String> {
     let mut selected = Vec::new();
     for idx in indices {
         if selected.len() >= MAX_RELEVANT {
@@ -446,7 +311,7 @@ fn json_tags(value: Option<&serde_json::Value>) -> Vec<String> {
 }
 
 /// Extract the first JSON array from a model reply.
-fn extract_json_array(text: &str) -> Vec<serde_json::Value> {
+pub(crate) fn extract_json_array(text: &str) -> Vec<serde_json::Value> {
     let Some(start) = text.find('[') else {
         return Vec::new();
     };
@@ -460,7 +325,7 @@ fn extract_json_array(text: &str) -> Vec<serde_json::Value> {
 }
 
 /// Trim a string to `max` chars at a character boundary.
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

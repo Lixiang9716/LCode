@@ -36,6 +36,7 @@ fn response(
     LlmResponse {
         content: content.to_string(),
         tool_calls,
+        server_results: Vec::new(),
         usage: Usage::default(),
         finish_reason: finish,
     }
@@ -72,6 +73,8 @@ async fn mcp_connected_server_appears_in_next_turn_tool_pool() {
             memory_store: None,
             team_bus: None,
             tuning: None,
+            internal_provider: None,
+            web_search: None,
         },
     );
 
@@ -139,6 +142,8 @@ async fn mcp_tool_call_routes_through_mcp_registry() {
             memory_store: None,
             team_bus: None,
             tuning: None,
+            internal_provider: None,
+            web_search: None,
         },
     );
 

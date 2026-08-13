@@ -20,7 +20,13 @@ fn response(
     finish_reason: FinishReason,
     tool_calls: Option<Vec<lcode::llm::ToolCallRequest>>,
 ) -> LlmResponse {
-    LlmResponse { content: content.to_string(), tool_calls, usage: Usage::default(), finish_reason }
+    LlmResponse {
+        content: content.to_string(),
+        tool_calls,
+        server_results: Vec::new(),
+        usage: Usage::default(),
+        finish_reason,
+    }
 }
 
 type SharedProvider = Arc<dyn lcode::llm::LlmProvider>;
@@ -339,6 +345,7 @@ async fn subagent_completed_published_once_per_subagent() {
         Ok(lcode::llm::LlmResponse {
             content: "done".to_string(),
             tool_calls: None,
+            server_results: Vec::new(),
             usage: lcode::llm::Usage::default(),
             finish_reason: lcode::llm::FinishReason::Stop,
         })

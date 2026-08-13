@@ -1,8 +1,4 @@
-//! Unit tests for the agent module — executor loop, conversation memory,
-//! and task planner.
-//!
-//! Migrated verbatim from the `#[cfg(test)]` code in `src/agent/`: these
-//! tests exercise only the crate's public API from outside the crate.
+//! Unit tests for the agent module (executor loop, conversation memory, planner).
 
 use lcode::agent::{
     AgentEvent, AgentRuntime, BackgroundManager, ConversationMemory, CronScheduler, Executor,
@@ -19,7 +15,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Build a `write_file` tool call with the given id and arguments.
 fn write_file_call(id: &str, args: &str) -> ToolCallRequest {
     ToolCallRequest {
         id: id.to_string(),
@@ -33,13 +28,17 @@ fn response(
     finish_reason: FinishReason,
     tool_calls: Option<Vec<ToolCallRequest>>,
 ) -> LlmResponse {
-    LlmResponse { content: content.to_string(), tool_calls, usage: Usage::default(), finish_reason }
+    LlmResponse {
+        content: content.to_string(),
+        tool_calls,
+        server_results: Vec::new(),
+        usage: Usage::default(),
+        finish_reason,
+    }
 }
 
-/// Build an executor backed by a mock provider that serves responses
-/// from a queue. Every received message batch is recorded into `seen`.
-/// Returns the executor, the LLM call counter, and the event stream
-/// subscription for asserting the published agent events.
+/// Build an executor with a queue-based mock provider; returns it, the
+/// LLM call counter, and the event stream subscription.
 fn executor_with_queue(
     responses: Vec<LlmResponse>,
     registry: ToolRegistry,
@@ -81,6 +80,8 @@ fn executor_with_queue(
                 memory_store: None,
                 team_bus: None,
                 tuning: None,
+                internal_provider: None,
+                web_search: None,
             },
         ),
         call_count,
@@ -89,14 +90,12 @@ fn executor_with_queue(
 }
 
 fn default_registry_in(dir: &std::path::Path) -> ToolRegistry {
-    // WriteFileTool captures the current directory at construction time.
     std::env::set_current_dir(dir).expect("chdir to tempdir");
     ToolRegistry::new(&Config::default()).expect("build tool registry")
 }
 
-/// Collect published events until the session ends (`TaskFinished` /
-/// `TaskAborted`) or the channel closes, with a timeout guard so a
-/// missing terminal event fails the test instead of hanging forever.
+/// Collect events until the session ends or the channel closes; the
+/// timeout guard fails the test instead of hanging forever.
 async fn collect_events(mut rx: tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {
     let mut events = Vec::new();
     while let Ok(Ok(event)) =

@@ -8,8 +8,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use lcode::config::Config;
-use lcode::tools::file::{ListDirTool, ReadFileTool, WriteFileTool};
-use lcode::tools::file_edit::EditFileTool;
+use lcode::tools::file::{ReadFileTool, WriteFileTool};
 use lcode::tools::search::{GlobTool, GrepTool};
 use lcode::tools::shell::ShellTool;
 use lcode::tools::{Tool, ToolRegistry, ToolResult};
@@ -37,8 +36,7 @@ impl Tool for TestTool {
     }
 }
 
-const BUILTIN_TOOLS: [&str; 7] =
-    ["read_file", "write_file", "edit_file", "list_dir", "grep", "glob", "shell"];
+const BUILTIN_TOOLS: [&str; 5] = ["read_file", "write_file", "grep", "glob", "shell"];
 
 #[test]
 fn test_registry_registers_builtin_tools() {
@@ -83,7 +81,7 @@ fn test_registry_execute_unknown_tool() {
 fn test_registry_execute_known_tool() {
     let registry = ToolRegistry::new(&Config::default()).unwrap();
 
-    let result = registry.execute("list_dir", &serde_json::json!({})).unwrap();
+    let result = registry.execute("grep", &serde_json::json!({"pattern": "x"})).unwrap();
     assert!(result.success);
 }
 
@@ -103,7 +101,7 @@ fn test_tool_result_display_err() {
     assert!(!err.success);
 }
 
-// --- file.rs: ReadFileTool / WriteFileTool / ListDirTool ---
+// --- file.rs: ReadFileTool / WriteFileTool ---
 
 #[test]
 fn test_read_file() {
@@ -215,107 +213,102 @@ fn test_write_file_empty_content() {
 }
 
 #[test]
-fn test_list_dir_subdir_suffix() {
+fn test_write_file_replace_unique_match() {
     let dir = TempDir::new().unwrap();
-    std::fs::create_dir(dir.path().join("subdir")).unwrap();
-    std::fs::write(dir.path().join("file.txt"), "x").unwrap();
-    let tool = ListDirTool::new_with_root(dir.path().to_path_buf());
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "alpha
+beta
+gamma
+",
+    )
+    .unwrap();
+    let tool = WriteFileTool::new_with_root(dir.path().to_path_buf());
 
-    let result = tool.execute(&serde_json::json!({"path": "."})).unwrap();
-    assert!(result.success);
-    assert!(result.output.contains("subdir/"));
-    assert!(result.output.contains("file.txt"));
-    assert!(!result.output.contains("file.txt/"));
-}
-
-#[test]
-fn test_list_dir_not_found() {
-    let dir = TempDir::new().unwrap();
-    let tool = ListDirTool::new_with_root(dir.path().to_path_buf());
-
-    let result = tool.execute(&serde_json::json!({"path": "no_such_dir"})).unwrap();
-    assert!(!result.success);
-    assert!(result.output.contains("Directory not found"));
-}
-
-// --- file_edit.rs: EditFileTool ---
-
-#[test]
-fn test_edit_file() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("edit.txt"), "hello world\nfoo bar\n").unwrap();
-
-    let tool = EditFileTool::new_with_root(dir.path().to_path_buf());
     let result = tool
         .execute(&serde_json::json!({
-            "path": "edit.txt",
-            "old_string": "hello world",
-            "new_string": "hi there"
+            "path": "notes.txt",
+            "replace": { "old_string": "beta", "new_string": "bravo" }
         }))
         .unwrap();
-    assert!(result.success);
-
-    let content = std::fs::read_to_string(dir.path().join("edit.txt")).unwrap();
-    assert!(content.contains("hi there"));
-    assert!(!content.contains("hello world"));
+    assert!(result.success, "{}", result.output);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "alpha
+bravo
+gamma
+"
+    );
 }
 
 #[test]
-fn test_edit_file_old_string_not_found() {
+fn test_write_file_replace_zero_matches() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("edit.txt"), "hello world\n").unwrap();
-    let tool = EditFileTool::new_with_root(dir.path().to_path_buf());
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "alpha
+",
+    )
+    .unwrap();
+    let tool = WriteFileTool::new_with_root(dir.path().to_path_buf());
 
     let result = tool
         .execute(&serde_json::json!({
-            "path": "edit.txt",
-            "old_string": "does not exist anywhere",
-            "new_string": "replacement"
+            "path": "notes.txt",
+            "replace": { "old_string": "missing", "new_string": "x" }
         }))
         .unwrap();
     assert!(!result.success);
     assert!(result.output.contains("not found"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "alpha
+"
+    );
 }
 
 #[test]
-fn test_edit_file_not_unique() {
+fn test_write_file_replace_multiple_matches() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("dup.txt"), "abc\ndef\nabc\n").unwrap();
-    let tool = EditFileTool::new_with_root(dir.path().to_path_buf());
+    std::fs::write(
+        dir.path().join("notes.txt"),
+        "x
+x
+",
+    )
+    .unwrap();
+    let tool = WriteFileTool::new_with_root(dir.path().to_path_buf());
 
     let result = tool
         .execute(&serde_json::json!({
-            "path": "dup.txt",
-            "old_string": "abc",
-            "new_string": "xyz"
+            "path": "notes.txt",
+            "replace": { "old_string": "x", "new_string": "y" }
         }))
         .unwrap();
     assert!(!result.success);
     assert!(result.output.contains("must be unique"));
-
-    // File must be left unchanged.
-    let content = std::fs::read_to_string(dir.path().join("dup.txt")).unwrap();
-    assert_eq!(content, "abc\ndef\nabc\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("notes.txt")).unwrap(),
+        "x
+x
+"
+    );
 }
 
 #[test]
-fn test_edit_file_multiline() {
+fn test_shell_timeout_kills_hung_command() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("multi.txt"), "fn foo() {\n    old_body\n}\n").unwrap();
-    let tool = EditFileTool::new_with_root(dir.path().to_path_buf());
+    let tool = ShellTool::new_with_root(dir.path().to_path_buf());
 
-    let result = tool
-        .execute(&serde_json::json!({
-            "path": "multi.txt",
-            "old_string": "fn foo() {\n    old_body\n}",
-            "new_string": "fn foo() {\n    new_body\n}"
-        }))
-        .unwrap();
-    assert!(result.success);
-
-    let content = std::fs::read_to_string(dir.path().join("multi.txt")).unwrap();
-    assert!(content.contains("new_body"));
-    assert!(!content.contains("old_body"));
+    let start = std::time::Instant::now();
+    let result = tool.execute(&serde_json::json!({ "command": "sleep 30", "timeout": 1 })).unwrap();
+    assert!(!result.success, "hung command must fail: {}", result.output);
+    assert!(result.output.contains("timed out"), "{}", result.output);
+    assert!(
+        start.elapsed().as_secs() < 10,
+        "killed within the timeout, took {:?}",
+        start.elapsed()
+    );
 }
 
 // --- search.rs: GrepTool / GlobTool ---

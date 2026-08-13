@@ -22,6 +22,7 @@ fn executor_with_cron(
         Ok(LlmResponse {
             content: "All done.".to_string(),
             tool_calls: None,
+            server_results: Vec::new(),
             usage: Usage::default(),
             finish_reason: FinishReason::Stop,
         })
@@ -46,6 +47,8 @@ fn executor_with_cron(
                 memory_store: None,
                 team_bus: None,
                 tuning: None,
+                internal_provider: None,
+                web_search: None,
             },
         ),
         events_rx,

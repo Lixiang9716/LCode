@@ -10,7 +10,7 @@ fn config_with(provider: &str, api_key: &str) -> Config {
     Config {
         llm: LlmConfig {
             provider: provider.to_string(),
-            api_key: api_key.to_string(),
+            api_key: secrecy::SecretString::from(api_key.to_string()),
             model: "test-model".to_string(),
             ..LlmConfig::default()
         },
@@ -76,7 +76,11 @@ fn openai_compatible_alias_without_key_mentions_openai() {
 
 #[test]
 fn anthropic_provider_defaults_to_official_api_base() {
-    let cfg = LlmConfig { api_key: "test-key".to_string(), api_base: None, ..LlmConfig::default() };
+    let cfg = LlmConfig {
+        api_key: secrecy::SecretString::from("test-key"),
+        api_base: None,
+        ..LlmConfig::default()
+    };
     let provider = lcode::llm::anthropic::AnthropicProvider::new(&cfg).unwrap();
     assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
 }
@@ -84,7 +88,7 @@ fn anthropic_provider_defaults_to_official_api_base() {
 #[test]
 fn anthropic_provider_uses_custom_api_base() {
     let cfg = LlmConfig {
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         api_base: Some("https://api.deepseek.com/anthropic".to_string()),
         ..LlmConfig::default()
     };
@@ -123,7 +127,7 @@ fn anthropic_serialization_merges_parallel_tool_results() {
         ToolCallRequest {
             id: "call-2".to_string(),
             call_type: "function".to_string(),
-            function: FunctionCall { name: "list_dir".to_string(), arguments: "{}".to_string() },
+            function: FunctionCall { name: "write_file".to_string(), arguments: "{}".to_string() },
         },
     ]);
     let messages = [
@@ -133,7 +137,7 @@ fn anthropic_serialization_merges_parallel_tool_results() {
         ChatMessage::tool("result-2".to_string(), "call-2".to_string()),
     ];
     let refs: Vec<&ChatMessage> = messages.iter().collect();
-    let json = anthropic_messages_to_json(&refs);
+    let json = anthropic_messages_to_json(&refs, false);
 
     // user(task) + assistant(tool_use x2) + ONE merged user message.
     assert_eq!(json.len(), 3, "tool results merge into one user message: {json:?}");
@@ -171,7 +175,7 @@ fn anthropic_serialization_keeps_single_tool_result_shape() {
         ChatMessage::tool("one".to_string(), "call-1".to_string()),
     ];
     let refs: Vec<&ChatMessage> = messages.iter().collect();
-    let json = anthropic_messages_to_json(&refs);
+    let json = anthropic_messages_to_json(&refs, false);
     assert_eq!(json.len(), 3);
     assert_eq!(json[2]["content"][0]["tool_use_id"], "call-1");
     assert_eq!(json[2]["content"][0]["content"], "one");

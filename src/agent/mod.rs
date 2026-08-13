@@ -29,21 +29,26 @@ use crate::tools::ToolRegistry;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod assets_skill;
 mod background;
 mod compaction;
 mod cron;
 mod event;
 mod executor;
 mod executor_hooks;
+pub mod guardrails;
 mod hooks;
 mod mcp;
 mod mcp_stdio;
 mod memory;
 mod memory_store;
+mod memory_store_llm;
 mod message_bus;
 mod planner;
 mod prompt;
 mod protocol;
+mod provider_build;
+mod quality;
 mod recorder;
 mod render;
 mod retry;
@@ -56,8 +61,10 @@ mod task;
 mod team;
 mod teammate;
 mod todo;
+mod usage_tracking;
 mod worktree;
 
+pub use assets_skill::{ensure_assets_skill, ASSETS_SKILL};
 pub use background::{
     register as register_background_tools, BackgroundCheckTool, BackgroundManager,
     BackgroundRunTool, BackgroundStatus, BackgroundTask,
@@ -87,6 +94,7 @@ pub use protocol::{
     ProtocolState, ProtocolStatus, RequestPlanTool, RequestShutdownTool, ResponseMatch,
     ReviewPlanTool, SubmitPlanTool,
 };
+pub use provider_build::{build_internal_provider, build_provider, web_search_spec};
 pub use recorder::spawn_event_recorder;
 pub use render::render_event;
 pub use retry::{RetryPolicy, RetryProvider, PROMPT_TOO_LONG_MARKER};
@@ -167,6 +175,9 @@ fn build_session(
 
     let mut hooks_registry = HookRegistry::default();
     register_default_hooks(&mut hooks_registry);
+    // Shell guardrails: sensitive paths and denied hosts also gate the
+    // shell tool, so the context guardrails are not bypassable.
+    guardrails::register(&mut hooks_registry, config.tools.clone());
     let hooks = Arc::new(hooks_registry);
 
     let (runtime, events_rx, commands_tx) =
@@ -177,6 +188,9 @@ fn build_session(
     todo::register(&mut registry, todo.clone(), Some(runtime.events_sender()));
 
     let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
+    // Built-in skills ship as files too: materialize the assets skill
+    // when missing (never overwriting user edits), then load the dir.
+    assets_skill::ensure_assets_skill(&skills_dir);
     skill::register(&mut registry, skills_dir.clone(), Some(runtime.events_sender()));
 
     let compact_request = Arc::new(Mutex::new(None));
@@ -327,16 +341,12 @@ async fn execute_session(
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
 ) -> anyhow::Result<TaskOutcome> {
-    // Audit trail: every event (turns, tool calls, subagents, background
-    // tasks, team messages, ...) lands in `.transcripts/events_{ts}.jsonl`
-    // with a timestamp, in arrival order. Fire-and-forget; the task ends
-    // when the event bus closes. Subscribed before the renderer takes
-    // `events_rx`, so no event published after this point is missed.
+    // Audit trail: every event lands in `.transcripts/events_{ts}.jsonl`
+    // in arrival order. Subscribed before the renderer, so nothing is missed.
     let recorder = spawn_event_recorder(events_rx.resubscribe(), &workspace);
     let renderer = render::spawn_renderer(events_rx, commands_tx);
 
-    // G9 (s07): skill layer-1 descriptions join the base system prompt;
-    // `resume` restores an existing conversation instead.
+    // G9 (s07): skill layer-1 descriptions join the system prompt.
     let mut skill_registry = SkillRegistry::default();
     if let Err(e) = skill_registry.load_from(&workspace.join("skills")) {
         tracing::debug!(error = %e, "skills directory unavailable");
@@ -358,6 +368,11 @@ async fn execute_session(
         memory_store: Some(memory_store),
         team_bus: Some(team_bus.clone()),
         tuning: Some(Arc::new(crate::config::RuntimeTuning::from_config(config))),
+        // Internal utility calls (compaction summaries, memory
+        // extraction) run on a dedicated provider with thinking mode
+        // forced off — see `build_internal_provider`.
+        internal_provider: Some(build_internal_provider(config)?),
+        web_search: web_search_spec(config),
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
@@ -367,84 +382,84 @@ async fn execute_session(
     // before awaiting the renderer, or the renderer never observes the
     // channel close and the process hangs after the task completes.
     let outcome = TaskOutcome { completed: !executor.aborted, turns: executor.last_turn };
-    // Session-level usage summary: token counts, cache hits and the
-    // estimated cost (provider pricing tier by configured model).
+    // Session-level usage summary: token/cache counts and cost.
     if !executor.aborted {
-        let usage = executor.last_usage.clone();
-        executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
-            model: config.llm.model.clone(),
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            cache_hit_tokens: usage.cache_hit_tokens,
-            cache_miss_tokens: usage.cache_miss_tokens,
-            reasoning_tokens: usage.reasoning_tokens,
-            cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
-        });
+        publish_usage_summary(&executor, config);
     }
+    print_budget_status(config, &executor.last_usage);
     drop(executor);
 
     // Teammate loops hold the team event bus; without a shutdown signal
-    // they keep working after the session ends and the renderer never
-    // observes the channel close (the process hangs for minutes).
+    // they keep working and the renderer never sees the channel close.
     team_bus.shutdown();
 
     let _ = renderer.await;
+
+    // Per-agent usage: teammates persist to `.team/usage.jsonl`; the
+    // renderer await above guarantees they exited, so totals are final.
+    print_team_usage(&workspace, &config.llm.model);
     let _ = recorder.await;
     Ok(outcome)
 }
 
-/// Kind of LLM backend a provider alias resolves to.
-enum ProviderKind {
-    Anthropic,
-    OpenAi,
+/// Publish the session-level UsageSummary event (lead agent).
+fn publish_usage_summary(executor: &crate::agent::Executor, config: &Config) {
+    let usage = executor.last_usage.clone();
+    executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
+        agent: "lead".to_string(),
+        model: config.llm.model.clone(),
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        cache_hit_tokens: usage.cache_hit_tokens,
+        cache_miss_tokens: usage.cache_miss_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
+    });
 }
 
-/// Build the appropriate LLM provider from configuration.
-///
-/// Provider aliases (all map to the existing Anthropic/OpenAI-compatible
-/// implementations, only the default endpoint differs):
-/// - `openai` / `openai_compatible` — OpenAI API or any OpenAI-compatible endpoint
-/// - `anthropic` / `claude` — Anthropic native endpoint
-/// - `deepseek`, `kimi` — Anthropic-compatible third-party endpoints
-/// - `minimax`, `glm` — OpenAI-compatible third-party endpoints
-///
-/// An explicit `llm.api_base` always wins over the alias's default
-/// endpoint. The result is wrapped in a [`RetryProvider`] so every LLM
-/// call gets retry/backoff and max_tokens-upgrade semantics (#4).
-pub fn build_provider(config: &Config) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let provider = config.llm.provider.to_lowercase();
-    let (kind, default_base) = match provider.as_str() {
-        "openai" | "openai_compatible" => (ProviderKind::OpenAi, None),
-        "anthropic" | "claude" => (ProviderKind::Anthropic, None),
-        "deepseek" => (ProviderKind::Anthropic, Some("https://api.deepseek.com/anthropic")),
-        "kimi" => (ProviderKind::Anthropic, Some("https://api.moonshot.cn/anthropic")),
-        "minimax" => (ProviderKind::OpenAi, Some("https://api.minimaxi.com/v1")),
-        "glm" => (ProviderKind::OpenAi, Some("https://open.bigmodel.cn/api/paas/v4")),
-        other => anyhow::bail!(
-            "Unknown LLM provider: {other}. Supported: openai, openai_compatible, \
-             anthropic, claude, deepseek, kimi, minimax, glm"
-        ),
+/// P0 budget status line: spent vs cap when a cap is configured.
+fn print_budget_status(config: &Config, usage: &crate::llm::Usage) {
+    let Some(budget) = config.llm.budget_total_usd else {
+        return;
     };
+    let spent = crate::llm::estimate_cost(&config.llm.model, usage);
+    let remaining = (budget - spent).max(0.0);
+    println!(
+        "💰 Budget: {} / {} spent ({} remaining)",
+        crate::llm::format_cost(spent),
+        crate::llm::format_cost(budget),
+        crate::llm::format_cost(remaining)
+    );
+}
 
-    // Explicit `llm.api_base` wins; otherwise fall back to the alias's
-    // default endpoint.
-    let api_base = config.llm.api_base.clone().or_else(|| default_base.map(str::to_string));
-    let llm = crate::config::LlmConfig { api_base, ..config.llm.clone() };
-
-    let inner: Box<dyn LlmProvider> = match kind {
-        ProviderKind::Anthropic => Box::new(crate::llm::anthropic::AnthropicProvider::new(&llm)?),
-        ProviderKind::OpenAi => Box::new(crate::llm::openai::OpenAiProvider::new(&llm)?),
+/// Print one usage line per teammate from `.team/usage.jsonl` (best
+/// effort: a teammate may still be working its final turn).
+fn print_team_usage(workspace: &std::path::Path, model: &str) {
+    let path = workspace.join(".team").join("usage.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
     };
-    let policy = RetryPolicy {
-        max_attempts: config.retry.max_attempts,
-        base_delay_ms: config.retry.base_delay_ms,
-        max_delay_ms: config.retry.max_delay_ms,
-    };
-    let retry = RetryProvider::with_fallback(inner, policy, config.llm.fallback_model.clone());
-    // Seed the retry budget (and thus the inner provider's request body)
-    // with the configured max_tokens instead of the hardcoded default.
-    retry.set_max_tokens(config.llm.max_tokens);
-    Ok(Box::new(retry))
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let usage = crate::llm::Usage {
+            prompt_tokens: value["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            completion_tokens: value["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: value["prompt_tokens"].as_u64().unwrap_or(0) as u32
+                + value["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_hit_tokens: value["cache_hit_tokens"].as_u64().unwrap_or(0) as u32,
+            cache_miss_tokens: value["cache_miss_tokens"].as_u64().unwrap_or(0) as u32,
+            reasoning_tokens: value["reasoning_tokens"].as_u64().unwrap_or(0) as u32,
+        };
+        let agent = value["agent"].as_str().unwrap_or("teammate");
+        println!(
+            "👥 {}: {} tokens ≈ {}",
+            agent,
+            usage.prompt_tokens + usage.completion_tokens,
+            crate::llm::format_cost(crate::llm::estimate_cost(model, &usage))
+        );
+    }
 }
 
 /// Resolve the workspace root for session state (skills dir, task board,

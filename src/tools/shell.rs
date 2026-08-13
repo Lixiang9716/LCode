@@ -5,6 +5,7 @@
 //! working directory confinement.
 
 use crate::config::Config;
+use crate::tools::sandbox::{self, SandboxMode};
 use crate::tools::{Tool, ToolResult};
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,6 +16,7 @@ pub struct ShellTool {
     allowed_commands: Vec<String>,
     denied_commands: Vec<String>,
     timeout_secs: u64,
+    sandbox: SandboxMode,
 }
 
 impl ShellTool {
@@ -24,6 +26,7 @@ impl ShellTool {
             allowed_commands: config.tools.allowed_commands.clone(),
             denied_commands: config.tools.denied_commands.clone(),
             timeout_secs: 120,
+            sandbox: SandboxMode::parse(&config.tools.sandbox),
         })
     }
 
@@ -36,6 +39,7 @@ impl ShellTool {
             allowed_commands: vec![],
             denied_commands: vec![],
             timeout_secs: 120,
+            sandbox: SandboxMode::None,
         }
     }
 
@@ -48,6 +52,7 @@ impl ShellTool {
             allowed_commands: vec![],
             denied_commands: denied,
             timeout_secs: 120,
+            sandbox: SandboxMode::None,
         }
     }
 
@@ -132,56 +137,127 @@ impl Tool for ShellTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
 
-        let _timeout_secs = args["timeout"].as_u64().unwrap_or(self.timeout_secs).min(300);
+        let timeout_secs = args["timeout"].as_u64().unwrap_or(self.timeout_secs).min(300);
 
         // Safety check
         self.check_safety(command_str)?;
 
-        let output = Command::new("sh")
+        // Spawn with piped output drained on reader threads, poll for
+        // completion, and kill on the deadline — `wait_with_output`
+        // would block forever on a hung command (e.g. `find /` on a
+        // slow mount), which this timeout actually enforces.
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(command_str)
             .current_dir(&self.workspace_root)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?
-            .wait_with_output()
-            .map_err(|e| anyhow::anyhow!("Failed to wait on command: {}", e))?;
+            .stderr(std::process::Stdio::piped());
+        // Sandbox wrapping (P0): explicit/auto mode resolved to the
+        // first available backend; auto with none adds a warning note.
+        let requested = self.sandbox;
+        let effective = sandbox::resolve(requested);
+        if let Err(e) = sandbox::wrap(effective, &self.workspace_root, &mut command, command_str) {
+            return Ok(ToolResult::err(format!("Sandbox setup failed: {}", e)));
+        }
+        let mut child =
+            command.spawn().map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?;
+        let stdout_reader = child.stdout.take().map(drain_in_thread);
+        let stderr_reader = child.stderr.take().map(drain_in_thread);
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let status = match wait_with_timeout(&mut child, timeout_secs) {
+            Ok(status) => status,
+            Err(()) => {
+                return Ok(ToolResult::err(format!(
+                    "Command timed out after {}s (max 300)",
+                    timeout_secs
+                )));
+            }
+        };
+
+        let stdout = read_drained(stdout_reader);
+        let stderr = read_drained(stderr_reader);
+        let exit_code = status.code().unwrap_or(-1);
 
         let mut result_output = String::new();
-
+        if let Some(note) = sandbox::mode_note(requested, effective) {
+            result_output.push_str(note);
+        }
         if exit_code == 0 {
             result_output.push_str("✅ Command succeeded (exit code: 0)\n");
         } else {
             result_output.push_str(&format!("❌ Command failed (exit code: {})\n", exit_code));
         }
 
-        if !stdout.is_empty() {
-            // Truncate output if too long
-            let truncated = truncate_output(&stdout, 10000);
-            result_output.push_str(&format!("--- stdout ---\n{}\n", truncated));
-        }
-
-        if !stderr.is_empty() {
-            let truncated = truncate_output(&stderr, 5000);
-            result_output.push_str(&format!("--- stderr ---\n{}\n", truncated));
-        }
+        push_section(&mut result_output, "stdout", &stdout, 10000);
+        push_section(&mut result_output, "stderr", &stderr, 5000);
 
         Ok(ToolResult::ok(result_output))
     }
 }
 
-/// Truncate long output with a note about truncation.
+/// Append `--- {label} ---` with the (truncated) output when non-empty.
+fn push_section(result: &mut String, label: &str, output: &str, max_len: usize) {
+    if output.is_empty() {
+        return;
+    }
+    let truncated = truncate_output(output, max_len);
+    result.push_str(&format!("--- {label} ---\n{truncated}\n"));
+}
+
+/// Drain a piped-output reader thread (best effort).
+fn read_drained(reader: Option<std::thread::JoinHandle<String>>) -> String {
+    reader.map(|h| h.join().unwrap_or_default()).unwrap_or_default()
+}
+
+/// A reader thread pulling a child's piped output to EOF (prevents the
+/// pipe buffer from deadlocking the child on large output).
+fn drain_in_thread<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    })
+}
+
+/// Poll a child until exit or the deadline; kills the child on timeout
+/// and returns `Err(())` so the caller can report it.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout_secs: u64,
+) -> std::result::Result<std::process::ExitStatus, ()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+        }
+    }
+}
+
+/// Truncate long output with a note about truncation. Walks back to a
+/// char boundary: slicing at `max_len` would panic mid-character.
 fn truncate_output(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
-
-    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
-
-    format!("{}\n... (truncated, total {} bytes)\n", &s[..boundary], s.len())
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... (truncated, total {} bytes)\n", &s[..end], s.len())
 }
