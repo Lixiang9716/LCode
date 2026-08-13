@@ -39,10 +39,11 @@ pub struct AnthropicProvider {
     /// Disable the provider's thinking mode when configured.
     thinking_disabled: bool,
     /// Reasoning effort tier for DeepSeek v4 (`low`/`high`/`max`), sent
-    /// as a `reasoning: {type: "enabled", effort}` block. `None` keeps
-    /// the model default (`high`). Only populated for third-party
-    /// endpoints: the native Anthropic API has no `reasoning` field and
-    /// rejects unknown top-level keys.
+    /// as `output_config: {effort}` — the only effort knob DeepSeek's
+    /// Anthropic-compatible endpoint supports (measured: `output_config
+    /// {effort: low}` drops the 88-token thinking template to 9 input
+    /// tokens; a top-level `reasoning` field is tolerated but ignored).
+    /// Only populated for DeepSeek endpoints.
     reasoning_effort: Option<String>,
     /// DeepSeek's Anthropic-compatible endpoint demands that every
     /// assistant message carry a `thinking` block when thinking mode is
@@ -79,27 +80,27 @@ impl AnthropicProvider {
         } else {
             config.provider.clone()
         };
-        // `reasoning` blocks are a DeepSeek-v4 extension; the native
-        // Anthropic endpoint has no such field (it would 400), so the
-        // effort is only wired for third-party (compatible) endpoints.
-        let is_third_party = api_base.trim_end_matches('/') != DEFAULT_API_BASE;
-        let reasoning_effort = if is_third_party {
-            config.reasoning_effort.map(|e| e.as_str().to_string())
-        } else {
-            None
-        };
-        // Thinking placeholder only on DeepSeek-compatible endpoints:
-        // native Anthropic validates real thinking blocks, and other
-        // third parties may not understand the placeholder.
-        let inject_thinking =
-            !config.thinking_disabled && is_third_party && api_base.contains("deepseek");
+        // DeepSeek-only wire extensions (exact host match, not a
+        // substring): native Anthropic validates real thinking blocks
+        // and rejects unknown fields; other third parties may not
+        // understand them either.
+        let deepseek = crate::llm::is_deepseek_endpoint(&api_base);
+        let reasoning_effort =
+            if deepseek { config.reasoning_effort.map(|e| e.as_str().to_string()) } else { None };
+        let inject_thinking = !config.thinking_disabled && deepseek;
         Ok(Self {
             api_key,
             model: Mutex::new(config.model.clone()),
             api_base,
             max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
-            client: reqwest::Client::new(),
+            // Cap connect at 30s and the whole request at 5 minutes so
+            // a stalled connection cannot hang the agent loop forever.
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("reqwest client builds"),
             label,
             thinking_disabled: config.thinking_disabled,
             reasoning_effort,
@@ -249,7 +250,7 @@ impl AnthropicProvider {
         if self.thinking_disabled {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
         } else if let Some(effort) = &self.reasoning_effort {
-            body["reasoning"] = serde_json::json!({ "type": "enabled", "effort": effort });
+            body["output_config"] = serde_json::json!({ "effort": effort });
         }
 
         if !system_prompt.is_empty() {
@@ -452,11 +453,13 @@ pub fn anthropic_message_to_json(msg: &&ChatMessage, inject_thinking: bool) -> s
         json["content"] = serde_json::to_value(content_parts).unwrap();
     } else if inject_thinking && msg.role == crate::llm::Role::Assistant {
         // Plain assistant message: the placeholder forces the array
-        // content form (thinking block first, then the text).
-        json["content"] = serde_json::json!([
-            { "type": "thinking", "thinking": "" },
-            { "type": "text", "text": msg.content },
-        ]);
+        // content form (thinking block first, then the text). An empty
+        // text block is skipped — strict APIs reject empty text blocks.
+        let mut parts = vec![serde_json::json!({ "type": "thinking", "thinking": "" })];
+        if !msg.content.is_empty() {
+            parts.push(serde_json::json!({ "type": "text", "text": msg.content }));
+        }
+        json["content"] = serde_json::to_value(parts).unwrap();
     } else {
         json["content"] = serde_json::json!(msg.content);
     }

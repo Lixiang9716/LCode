@@ -40,16 +40,19 @@ pub fn web_search_spec(config: &Config) -> Option<crate::llm::ServerToolSpec> {
     if !config.tools.enable_web {
         return None;
     }
-    let (kind, _) = provider_kind(&config.llm.provider.to_lowercase()).ok()?;
+    let (kind, default_base) = provider_kind(&config.llm.provider.to_lowercase()).ok()?;
     if !matches!(kind, ProviderKind::Anthropic) {
         return None;
     }
+    // Explicit `llm.api_base` wins, falling back to the alias default.
+    // Exact host match: lookalike/proxy hosts must not enable the tool.
     let api_base = config
         .llm
         .api_base
         .clone()
-        .unwrap_or_else(|| "https://api.deepseek.com/anthropic".to_string());
-    if !api_base.contains("api.deepseek.com") {
+        .or_else(|| default_base.map(str::to_string))
+        .unwrap_or_default();
+    if !crate::llm::is_deepseek_endpoint(&api_base) {
         return None;
     }
     Some(crate::llm::ServerToolSpec {

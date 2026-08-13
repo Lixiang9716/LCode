@@ -212,11 +212,18 @@ async fn read_approval_line() -> bool {
     .unwrap_or(false)
 }
 
-/// Truncate a string to max_len characters, adding "..." if truncated.
+/// Truncate a string to max_len bytes, adding "..." if truncated.
+///
+/// Walks back to a char boundary: `s[..max_len]` would panic when
+/// `max_len` lands inside a multi-byte character (search results are
+/// untrusted remote text and make that likely).
 fn truncate(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
-    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
-    &s[..boundary]
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

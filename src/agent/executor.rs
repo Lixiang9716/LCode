@@ -169,15 +169,16 @@ impl Executor {
             self.hooks.run(&stop_ctx);
 
             // G3 (s09): at session end, extract durable memories from the
-            // conversation and consolidate the memory store.
+            // conversation and consolidate the memory store. Their usage
+            // accumulates into the session total (`last_usage`).
+            self.last_usage = usage;
             self.persist_memories(&memory).await;
 
             self.runtime.publish(AgentEvent::TaskFinished {
                 turns: turn,
-                prompt_tokens: usage.prompt_tokens,
-                completion_tokens: usage.completion_tokens,
+                prompt_tokens: self.last_usage.prompt_tokens,
+                completion_tokens: self.last_usage.completion_tokens,
             });
-            self.last_usage = usage;
         }
 
         Ok(memory)
@@ -262,9 +263,9 @@ impl Executor {
             // Turn-start injections (s08 background, s14 cron, s15 inbox).
             crate::agent::executor_hooks::inject_turn_start(self, memory);
 
-            // Dynamic tool pool (s19) + context compaction (s06).
+            // Tool pool (s19) + compaction (s06); summarizer usage joins the total.
             let tool_defs = self.tool_pool();
-            self.maybe_compact(memory).await?;
+            self.maybe_compact(memory, &mut total_usage).await?;
 
             let context = memory.get_context();
             let response = match self.call_llm(&context, &tool_defs, stream).await {

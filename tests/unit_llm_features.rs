@@ -68,15 +68,16 @@ fn openai_thinking_disabled_wins_over_reasoning_effort() {
 }
 
 #[test]
-fn anthropic_reasoning_block_only_on_third_party_endpoints() {
-    // DeepSeek-compatible endpoint: reasoning block is sent.
+fn anthropic_effort_uses_output_config_only_on_deepseek() {
+    // DeepSeek endpoint: `output_config: {effort}` is the only knob the
+    // endpoint honours (a top-level `reasoning` field is ignored).
     let config = LlmConfig {
         reasoning_effort: Some(ReasoningEffort::Low),
         ..dummy_anthropic_config(Some("https://api.deepseek.com/anthropic"))
     };
     let provider = AnthropicProvider::new(&config).unwrap();
     let body = provider.build_body(&[ChatMessage::user("hi")], &[], false).expect("body builds");
-    assert_eq!(body["reasoning"], serde_json::json!({ "type": "enabled", "effort": "low" }));
+    assert_eq!(body["output_config"], serde_json::json!({ "effort": "low" }));
 
     // Native Anthropic endpoint: no such field (the API would reject it).
     let config = LlmConfig {
@@ -85,7 +86,7 @@ fn anthropic_reasoning_block_only_on_third_party_endpoints() {
     };
     let provider = AnthropicProvider::new(&config).unwrap();
     let body = provider.build_body(&[ChatMessage::user("hi")], &[], false).expect("body builds");
-    assert!(body.get("reasoning").is_none());
+    assert!(body.get("output_config").is_none());
 }
 
 // --- internal provider (P0-1) ---

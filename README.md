@@ -172,11 +172,13 @@ temperature = 0.3
 fallback_model = ""            # optional failover model
 thinking_disabled = false      # true: skip DeepSeek v4's hidden reasoning
                                # tokens (~79 fewer prompt tokens, faster)
-reasoning_effort = "high"      # "low" / "high" / "max"（thinking 开启时生效）
-                               # low 实测省 ~65% 推理 token、~50% 延迟，正确率无损失
+reasoning_effort = "high"      # "low" / "high" / "max"（thinking 开启时生效；仅 deepseek 端点）
+                               # 实测 low 档把 thinking 系统模板从 88 输入 token 降到 9（见报告附录）
 internal_thinking_disabled = true
                                # true（默认）: 内部工具调用（压缩摘要、记忆提取/合并）
-                               # 强制关闭思考——同任务实测 48 vs 531 tokens
+                               # 强制关闭思考——实测同任务 48 vs 531 tokens（报告附录）。
+                               # 注意合并方向：项目层只能把 true 放宽为 false，
+                               # 不能反向收紧（避免默认值踩掉全局配置）
 
 [agent]
 system_prompt = "You are LCode, an expert software engineer..."
@@ -205,8 +207,9 @@ max_tool_result_chars = 50000
 consolidate_threshold = 10     # files before consolidation kicks in
 max_relevant = 5               # memories injected into the system prompt
 max_extract_chars = 4000       # dialogue characters fed to extraction
-json_lock = false              # true: 用 beta 前缀续写强制记忆提取以 `[` 开头
-                               # 的 JSON 回复（需 openai_compatible + api.deepseek.com）
+json_lock = false              # true: 用 beta 前缀续写强制记忆提取以 `[` 开头的 JSON
+                               # 回复（需 openai_compatible + api.deepseek.com）。
+                               # 端点不支持前缀时自动回退为普通请求（不报错）
 
 [background]
 default_timeout_secs = 300
@@ -245,12 +248,17 @@ See `src/config/mod.rs` (`apply_env_overrides`) for the full key list.
   布局，不要打乱。
 - **推理档位**：机械性任务（改测试、格式化、查错）用 `reasoning_effort = "low"`；
   架构设计/重构用默认 `high` 或 `max`。内部调用（压缩/记忆）默认已强制关思考。
+  档位在 OpenAI 格式端点是顶层 `reasoning_effort` 字段，在 Anthropic 兼容端点是
+  `output_config: {effort}`——两者都只在 deepseek 端点上发送，其他端点不会收到
+  未知字段（避免 400）。
 - **联网检索**：`deepseek` 端点（Anthropic 兼容）自动暴露服务端 `web_search` 工具，
   由 API 执行搜索并回传结果，无需本地工具；`tools.enable_web = false` 关闭。
+  声明了 web_search 的会话自动退化为非流式（搜索结果无法走 delta 流，且回退重发
+  会重复执行、重复计费搜索）。
 - **JSON 锁定**：`memory.json_lock = true` 时记忆提取走 beta 前缀续写端点
   （`https://api.deepseek.com/beta/chat/completions`），模型被迫以 `[` 开头，
   无法前置废话，JSON 解析更可靠；需要 `provider = "openai_compatible"` +
-  `api_base = "https://api.deepseek.com"`。
+  `api_base = "https://api.deepseek.com"`；端点不支持时自动回退普通请求。
 
 ## 📊 Token Usage & Cost
 

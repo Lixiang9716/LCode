@@ -20,7 +20,11 @@ impl Executor {
         tool_defs: &[ToolDefinition],
         stream: bool,
     ) -> anyhow::Result<LlmResponse> {
-        if stream {
+        // Server-side web_search cannot ride the delta stream: its result
+        // blocks arrive outside the text deltas, and a ToolCalls
+        // fallback would re-send the request and re-run (and re-bill)
+        // the search. Plain chat keeps the search grounding intact.
+        if stream && self.web_search.is_none() {
             self.chat_stream(context, tool_defs).await
         } else {
             self.provider.chat(context, tool_defs).await

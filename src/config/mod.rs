@@ -181,6 +181,11 @@ fn merge_llm(base: &mut LlmConfig, other: LlmConfig) {
     if other.reasoning_effort.is_some() {
         base.reasoning_effort = other.reasoning_effort;
     }
+    // One-way merge (false wins): the field defaults to `true`, so a
+    // project file that never mentions it must not stomp a global
+    // `false`. Consequence, documented in the README: a project layer
+    // can relax the internal no-thinking setting but not tighten it
+    // back — use the env override or the global file to re-enable.
     if !other.internal_thinking_disabled {
         base.internal_thinking_disabled = false;
     }
@@ -212,12 +217,12 @@ fn apply_llm_env_overrides(llm: &mut LlmConfig) {
         llm.thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
     }
     if let Ok(val) = std::env::var("LCODE_LLM_REASONING_EFFORT") {
-        llm.reasoning_effort = match val.to_lowercase().as_str() {
-            "low" => Some(settings::ReasoningEffort::Low),
-            "high" => Some(settings::ReasoningEffort::High),
-            "max" => Some(settings::ReasoningEffort::Max),
-            _ => None,
-        };
+        // Invalid values leave the config-file value untouched (unlike
+        // a silent `None` overwrite).
+        match val.parse::<settings::ReasoningEffort>() {
+            Ok(effort) => llm.reasoning_effort = Some(effort),
+            Err(e) => tracing::warn!(env = "LCODE_LLM_REASONING_EFFORT", "{e}"),
+        }
     }
     if let Ok(val) = std::env::var("LCODE_LLM_INTERNAL_THINKING_DISABLED") {
         llm.internal_thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");

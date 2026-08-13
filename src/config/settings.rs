@@ -275,3 +275,25 @@ impl ReasoningEffort {
         }
     }
 }
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+
+    /// Case-insensitive parse shared by the env override and the
+    /// `lcode config set` paths. TOML files deserialize strictly via
+    /// serde and accept the lowercase spellings only.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "low" => Ok(ReasoningEffort::Low),
+            "high" => Ok(ReasoningEffort::High),
+            "max" => Ok(ReasoningEffort::Max),
+            other => Err(format!("invalid reasoning_effort: {other} (low/high/max)")),
+        }
+    }
+}
+
+impl std::fmt::Display for ReasoningEffort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}

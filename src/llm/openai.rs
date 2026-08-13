@@ -27,7 +27,9 @@ pub struct OpenAiProvider {
     thinking_disabled: bool,
     /// Reasoning effort tier (DeepSeek v4): `low`/`high`/`max`, sent as
     /// the top-level `reasoning_effort` parameter. `None` keeps the
-    /// model default (`high`).
+    /// model default (`high`). Gated to DeepSeek endpoints: native
+    /// OpenAI and other compatible providers do not understand the
+    /// field (its values differ or it 400s).
     reasoning_effort: Option<String>,
 }
 
@@ -42,6 +44,14 @@ impl OpenAiProvider {
 
         let api_base =
             config.api_base.clone().unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        // `reasoning_effort` is a DeepSeek-specific parameter; other
+        // OpenAI-format endpoints (native OpenAI, minimax, glm) would
+        // reject it.
+        let reasoning_effort = if crate::llm::is_deepseek_endpoint(&api_base) {
+            config.reasoning_effort.map(|e| e.as_str().to_string())
+        } else {
+            None
+        };
 
         Ok(Self {
             api_key: config.api_key.clone(),
@@ -49,9 +59,16 @@ impl OpenAiProvider {
             api_base,
             max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
-            client: reqwest::Client::new(),
+            // No hardcoded timeout means a stalled connect hangs the
+            // agent loop forever; cap connect at 30s and the whole
+            // request at 5 minutes.
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .expect("reqwest client builds"),
             thinking_disabled: config.thinking_disabled,
-            reasoning_effort: config.reasoning_effort.map(|e| e.as_str().to_string()),
+            reasoning_effort,
         })
     }
 }
@@ -206,6 +223,9 @@ impl OpenAiProvider {
 pub fn completion_url(api_base: &str, prefix: bool) -> String {
     let base = api_base.trim_end_matches('/');
     if prefix {
+        // `https://api.deepseek.com/v1` is a valid base for plain chat
+        // but must not produce `.../v1/beta/...` for prefix requests.
+        let base = base.strip_suffix("/v1").unwrap_or(base);
         format!("{base}/beta/chat/completions")
     } else {
         format!("{base}/chat/completions")

@@ -5,7 +5,7 @@
 //! Kept in a separate file so `executor.rs` stays under the 500-line
 //! style limit.
 
-use crate::agent::compaction::{auto_compact, micro_compact, AUTO_COMPACT_THRESHOLD};
+use crate::agent::compaction::{auto_compact_with_usage, micro_compact, AUTO_COMPACT_THRESHOLD};
 use crate::agent::event::AgentEvent;
 use crate::agent::executor::{Executor, LoopControl};
 use crate::agent::runtime::AgentRuntime;
@@ -20,7 +20,8 @@ impl Executor {
         self.internal_provider.as_deref().unwrap_or(self.provider.as_ref())
     }
 
-    pub(crate) fn tool_pool(&self) -> Vec<ToolDefinition> {
+    #[doc(hidden)]
+    pub fn tool_pool(&self) -> Vec<ToolDefinition> {
         let mut defs = self.registry.definitions();
         if let Ok(mcp) = self.mcp.lock() {
             defs.extend(mcp.tool_definitions());
@@ -67,9 +68,12 @@ impl Executor {
     /// G1: context compaction pipeline — micro pass every turn, plus
     /// auto-compaction when the token budget is exceeded or the model
     /// requested it via the `compact` tool (s06).
+    /// `total_usage` receives the summarizer call's usage so internal
+    /// calls are visible in the session total.
     pub(crate) async fn maybe_compact(
         &mut self,
         memory: &mut ConversationMemory,
+        total_usage: &mut crate::llm::Usage,
     ) -> anyhow::Result<()> {
         // Manual request from the `compact` tool takes priority.
         let requested_focus = self.compact_request.lock().unwrap().take();
@@ -91,7 +95,7 @@ impl Executor {
             // Internal utility call: the thinking-disabled internal
             // provider keeps the summary cheap and fast (P0-1).
             let provider = self.internal_provider();
-            let summary = auto_compact(
+            let (summary, usage) = auto_compact_with_usage(
                 memory.messages_mut(),
                 provider,
                 requested_focus.as_deref(),
@@ -104,28 +108,32 @@ impl Executor {
                 summary,
                 transcript_path: transcript.display().to_string(),
             });
+            crate::agent::usage_tracking::accumulate_usage(total_usage, &usage);
         }
         Ok(())
     }
 
     /// G3 (s09): at session end, extract durable memories from the
     /// conversation via the LLM and consolidate the store. Failures are
-    /// logged, never fatal.
-    pub(crate) async fn persist_memories(&self, memory: &ConversationMemory) {
+    /// logged, never fatal. Both calls run on the thinking-disabled
+    /// internal provider (P0-1), and their usage lands in the session
+    /// total so internal calls are not invisible to the UsageSummary.
+    pub(crate) async fn persist_memories(&mut self, memory: &ConversationMemory) {
         let Some(store) = &self.memory_store else { return };
         let text = serde_json::to_string(memory.messages()).unwrap_or_default();
         if text.is_empty() {
             return;
         }
-        // Internal utility calls: the thinking-disabled internal
-        // provider (P0-1); these summarize/classify, reasoning is waste.
-        let provider = self.internal_provider();
-        match store.extract(&text, provider).await {
-            Ok(n) => tracing::info!(memories = n, "extracted session memories"),
+        match store.extract_with_usage(&text, self.internal_provider()).await {
+            Ok((n, usage)) => {
+                accumulate_usage(&mut self.last_usage, &usage);
+                tracing::info!(memories = n, "extracted session memories");
+            }
             Err(e) => tracing::debug!(error = %e, "memory extraction skipped"),
         }
-        if let Err(e) = store.consolidate(provider).await {
-            tracing::debug!(error = %e, "memory consolidation skipped");
+        match store.consolidate_with_usage(self.internal_provider()).await {
+            Ok((_, usage)) => accumulate_usage(&mut self.last_usage, &usage),
+            Err(e) => tracing::debug!(error = %e, "memory consolidation skipped"),
         }
     }
 
@@ -218,6 +226,7 @@ impl Executor {
                 // asked for a tool turn but sent nothing actionable.
                 let tool_calls = response.tool_calls.clone().unwrap_or_default();
                 if tool_calls.is_empty() && response.server_results.is_empty() {
+                    tracing::warn!("tool_calls turn with no calls and no server results");
                     return Ok(LoopControl::Continue);
                 }
 
@@ -234,9 +243,24 @@ impl Executor {
                 self.execute_tool_calls(&tool_calls, &response.server_results, memory).await
             }
             FinishReason::Stop | FinishReason::Length => {
-                // Final response — no more tool calls
+                // Final response. DeepSeek may inline server-side results
+                // in the same message as the final answer (stop_reason
+                // end_turn): record them so the grounding survives in the
+                // conversation, pairing the assistant tool calls with the
+                // recorded results.
                 publish_text_unless(&self.runtime, &response.content, text_already_published);
-                memory.add_assistant(response.content);
+                // The assistant message must carry a tool_use for every
+                // recorded result, or the wire pairing breaks on resume.
+                let tool_calls = ensure_paired_calls(
+                    response.tool_calls.clone().unwrap_or_default(),
+                    &response.server_results,
+                );
+                if tool_calls.is_empty() && response.server_results.is_empty() {
+                    memory.add_assistant(response.content);
+                } else {
+                    memory.add_assistant_with_tool_calls(response.content.clone(), tool_calls);
+                    self.record_all_server_results(&response.server_results, memory);
+                }
                 Ok(LoopControl::Stop)
             }
             FinishReason::ContentFilter => {
@@ -265,8 +289,20 @@ impl Executor {
         memory: &mut ConversationMemory,
     ) -> anyhow::Result<LoopControl> {
         for tc in tool_calls {
+            // A result matching by id always belongs to this call, even
+            // when the server tool was not declared in this session's
+            // pool (defensive: results only arrive when it was).
             if let Some(server) = server_results.iter().find(|r| r.id == tc.id) {
-                self.record_server_result(server, memory);
+                self.record_server_result(server, tc, memory);
+                continue;
+            }
+            if self.is_server_tool(tc) {
+                // Server-side tools never execute locally: the API ran
+                // them before this response arrived. A missing result
+                // becomes an explicit error result instead of leaking
+                // into local execution (which would block on approval
+                // for a tool that has no local body).
+                self.record_server_error(tc, memory);
                 continue;
             }
             match self.handle_tool_call(tc, memory).await? {
@@ -277,12 +313,32 @@ impl Executor {
         Ok(LoopControl::Continue)
     }
 
+    /// Is this tool call a declared server-side tool (web_search)?
+    fn is_server_tool(&self, tc: &crate::llm::ToolCallRequest) -> bool {
+        self.web_search.as_ref().is_some_and(|spec| tc.function.name == spec.name)
+    }
+
+    /// Record every API-executed server result (used by the Stop path,
+    /// where no further loop turn will consume them).
+    fn record_all_server_results(
+        &self,
+        server_results: &[crate::llm::ServerToolResult],
+        memory: &mut ConversationMemory,
+    ) {
+        for server in server_results {
+            let call = synthesized_call(server);
+            self.record_server_result(server, &call, memory);
+        }
+    }
+
     /// Record an API-executed server-tool result (web search): publish
-    /// the execution event and append the result text to the
-    /// conversation, exactly like a locally executed tool.
+    /// the call + execution events and append the result text to the
+    /// conversation, exactly like a locally executed tool. No approval:
+    /// the API already executed the search before the response arrived.
     fn record_server_result(
         &self,
         server: &crate::llm::ServerToolResult,
+        call: &crate::llm::ToolCallRequest,
         memory: &mut ConversationMemory,
     ) {
         let output = if server.content.is_empty() {
@@ -290,12 +346,59 @@ impl Executor {
         } else {
             server.content.clone()
         };
+        self.runtime.publish(AgentEvent::ToolCallRequested {
+            id: call.id.clone(),
+            name: call.function.name.clone(),
+            arguments: serde_json::from_str(&call.function.arguments).unwrap_or_default(),
+            requires_approval: false,
+        });
         self.runtime.publish(AgentEvent::ToolCallExecuted {
             id: server.id.clone(),
             output: output.clone(),
         });
         memory.add_tool_result(output, server.id.clone());
     }
+
+    /// A server tool call without a matching result: record an explicit
+    /// error result instead of attempting local execution.
+    fn record_server_error(
+        &self,
+        tc: &crate::llm::ToolCallRequest,
+        memory: &mut ConversationMemory,
+    ) {
+        let message = format!("Server-side tool '{}' returned no result", tc.function.name);
+        tracing::warn!(tool = tc.function.name, "server tool call without result");
+        self.runtime
+            .publish(AgentEvent::ToolCallExecuted { id: tc.id.clone(), output: message.clone() });
+        memory.add_tool_result(message, tc.id.clone());
+    }
+}
+
+/// A tool-call placeholder matching a server-side result: guarantees
+/// the assistant message pairs the recorded result on the wire.
+fn synthesized_call(server: &crate::llm::ServerToolResult) -> crate::llm::ToolCallRequest {
+    crate::llm::ToolCallRequest {
+        id: server.id.clone(),
+        call_type: "function".to_string(),
+        function: crate::llm::FunctionCall {
+            name: server.name.clone(),
+            arguments: "{}".to_string(),
+        },
+    }
+}
+
+/// Extend the assistant message's tool calls so every recorded server
+/// result has a matching tool_use (wire pairing on resume).
+fn ensure_paired_calls(
+    mut tool_calls: Vec<crate::llm::ToolCallRequest>,
+    server_results: &[crate::llm::ServerToolResult],
+) -> Vec<crate::llm::ToolCallRequest> {
+    for server in server_results {
+        if !tool_calls.iter().any(|tc| tc.id == server.id) {
+            tool_calls.push(synthesized_call(server));
+        }
+    }
+    tool_calls
 }
 
 /// Publish assistant text as a [`AgentEvent::TextGenerated`] event when

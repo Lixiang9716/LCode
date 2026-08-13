@@ -225,3 +225,17 @@ impl ChatMessage {
 pub fn has_prefix(messages: &[ChatMessage]) -> bool {
     messages.iter().any(|m| m.prefix == Some(true))
 }
+
+/// Does `api_base` point at DeepSeek's official API host? Exact host
+/// match (`api.deepseek.com`, any path or port). Proxy/gateway hosts are
+/// deliberately not recognized: DeepSeek-only wire extensions (thinking
+/// placeholder, reasoning effort, web_search) must stay off elsewhere,
+/// and lookalike hosts like `api.deepseek.com.evil.io` must not match.
+pub fn is_deepseek_endpoint(api_base: &str) -> bool {
+    let base = api_base.trim();
+    let rest =
+        base.strip_prefix("https://").or_else(|| base.strip_prefix("http://")).unwrap_or(base);
+    let host = rest.split('/').next().unwrap_or(rest);
+    let host = host.split(':').next().unwrap_or(host);
+    host == "api.deepseek.com"
+}

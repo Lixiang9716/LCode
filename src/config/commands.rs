@@ -80,10 +80,18 @@ pub fn set_config_value(key: &str, value: &str) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Load or create config
+    // Load or create config. A hand-edited file that fails to parse
+    // must abort loudly instead of silently wiping every stored value
+    // (api_key, model, ...) back to defaults.
     let mut cfg: Config = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
-        toml::from_str(&content).unwrap_or_default()
+        toml::from_str(&content).map_err(|e| {
+            anyhow::anyhow!(
+                "{} is invalid TOML ({}). Fix it before changing config via the CLI.",
+                config_path.display(),
+                e
+            )
+        })?
     } else {
         Config::default()
     };

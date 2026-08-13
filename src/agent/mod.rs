@@ -40,6 +40,7 @@ mod mcp;
 mod mcp_stdio;
 mod memory;
 mod memory_store;
+mod memory_store_llm;
 mod message_bus;
 mod planner;
 mod prompt;
