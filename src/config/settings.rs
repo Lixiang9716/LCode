@@ -277,6 +277,12 @@ pub struct ToolsConfig {
     /// One-way merge (false wins).
     #[serde(default = "default_scrub_secrets")]
     pub scrub_secrets: bool,
+
+    /// Shell isolation mode: "none" (default, unchanged), "auto"
+    /// (landlock → bwrap → docker, first available), or an explicit
+    /// backend. Unavailable backends run unsandboxed with a warning.
+    #[serde(default = "default_sandbox")]
+    pub sandbox: String,
 }
 
 impl Default for ToolsConfig {
@@ -298,6 +304,7 @@ impl Default for ToolsConfig {
             network_requires_approval: default_network_requires_approval(),
             sensitive_paths: default_sensitive_paths(),
             scrub_secrets: default_scrub_secrets(),
+            sandbox: default_sandbox(),
         }
     }
 }
@@ -408,6 +415,10 @@ pub fn default_sensitive_paths() -> Vec<String> {
 #[doc(hidden)]
 pub fn default_scrub_secrets() -> bool {
     true
+}
+#[doc(hidden)]
+pub fn default_sandbox() -> String {
+    "none".into()
 }
 
 impl ReasoningEffort {

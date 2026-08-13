@@ -100,6 +100,9 @@ pub fn merge_config(base: &mut Config, other: Config) {
     if !other.tools.scrub_secrets {
         base.tools.scrub_secrets = false;
     }
+    if other.tools.sandbox != settings::default_sandbox() {
+        base.tools.sandbox = other.tools.sandbox;
+    }
     if other.memory.json_lock {
         base.memory.json_lock = true;
     }
@@ -152,6 +155,9 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     set_list_env("LCODE_TOOLS_SENSITIVE_PATHS", &mut cfg.tools.sensitive_paths);
     if let Ok(val) = std::env::var("LCODE_TOOLS_SCRUB_SECRETS") {
         cfg.tools.scrub_secrets = val == "1" || val.eq_ignore_ascii_case("true");
+    }
+    if let Ok(val) = std::env::var("LCODE_TOOLS_SANDBOX") {
+        cfg.tools.sandbox = val;
     }
 }
 

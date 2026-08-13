@@ -241,6 +241,9 @@ sensitive_paths = [".env", ".env.*", ".lcode.toml", "*.pem", "id_rsa*", ".ssh/*"
 scrub_secrets = true           # read_file 输出红化检测到的密钥
 network_requires_approval = true
                                # URL 抓取忽略 auto_approve 强制走审批
+sandbox = "none"               # shell 隔离：none / auto / landlock / bwrap / docker
+                               # auto = landlock→bwrap→docker 选第一个可用（无则警告降级）
+                               # landlock 零外部依赖（内核 ≥5.13）：根只读+工作区可写
 ```
 
 Each value can also be overridden per invocation via its `LCODE_*`

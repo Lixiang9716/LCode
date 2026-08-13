@@ -5,6 +5,7 @@
 //! working directory confinement.
 
 use crate::config::Config;
+use crate::tools::sandbox::{self, SandboxMode};
 use crate::tools::{Tool, ToolResult};
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,6 +16,7 @@ pub struct ShellTool {
     allowed_commands: Vec<String>,
     denied_commands: Vec<String>,
     timeout_secs: u64,
+    sandbox: SandboxMode,
 }
 
 impl ShellTool {
@@ -24,6 +26,7 @@ impl ShellTool {
             allowed_commands: config.tools.allowed_commands.clone(),
             denied_commands: config.tools.denied_commands.clone(),
             timeout_secs: 120,
+            sandbox: SandboxMode::parse(&config.tools.sandbox),
         })
     }
 
@@ -36,6 +39,7 @@ impl ShellTool {
             allowed_commands: vec![],
             denied_commands: vec![],
             timeout_secs: 120,
+            sandbox: SandboxMode::None,
         }
     }
 
@@ -48,6 +52,7 @@ impl ShellTool {
             allowed_commands: vec![],
             denied_commands: denied,
             timeout_secs: 120,
+            sandbox: SandboxMode::None,
         }
     }
 
@@ -141,14 +146,22 @@ impl Tool for ShellTool {
         // completion, and kill on the deadline — `wait_with_output`
         // would block forever on a hung command (e.g. `find /` on a
         // slow mount), which this timeout actually enforces.
-        let mut child = Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg("-c")
             .arg(command_str)
             .current_dir(&self.workspace_root)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?;
+            .stderr(std::process::Stdio::piped());
+        // Sandbox wrapping (P0): explicit/auto mode resolved to the
+        // first available backend; auto with none adds a warning note.
+        let requested = self.sandbox;
+        let effective = sandbox::resolve(requested);
+        if let Err(e) = sandbox::wrap(effective, &self.workspace_root, &mut command, command_str) {
+            return Ok(ToolResult::err(format!("Sandbox setup failed: {}", e)));
+        }
+        let mut child =
+            command.spawn().map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?;
         let stdout_reader = child.stdout.take().map(drain_in_thread);
         let stderr_reader = child.stderr.take().map(drain_in_thread);
 
@@ -167,26 +180,29 @@ impl Tool for ShellTool {
         let exit_code = status.code().unwrap_or(-1);
 
         let mut result_output = String::new();
-
+        if let Some(note) = sandbox::mode_note(requested, effective) {
+            result_output.push_str(note);
+        }
         if exit_code == 0 {
             result_output.push_str("✅ Command succeeded (exit code: 0)\n");
         } else {
             result_output.push_str(&format!("❌ Command failed (exit code: {})\n", exit_code));
         }
 
-        if !stdout.is_empty() {
-            // Truncate output if too long
-            let truncated = truncate_output(&stdout, 10000);
-            result_output.push_str(&format!("--- stdout ---\n{}\n", truncated));
-        }
-
-        if !stderr.is_empty() {
-            let truncated = truncate_output(&stderr, 5000);
-            result_output.push_str(&format!("--- stderr ---\n{}\n", truncated));
-        }
+        push_section(&mut result_output, "stdout", &stdout, 10000);
+        push_section(&mut result_output, "stderr", &stderr, 5000);
 
         Ok(ToolResult::ok(result_output))
     }
+}
+
+/// Append `--- {label} ---` with the (truncated) output when non-empty.
+fn push_section(result: &mut String, label: &str, output: &str, max_len: usize) {
+    if output.is_empty() {
+        return;
+    }
+    let truncated = truncate_output(output, max_len);
+    result.push_str(&format!("--- {label} ---\n{truncated}\n"));
 }
 
 /// Drain a piped-output reader thread (best effort).
