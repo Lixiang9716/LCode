@@ -32,6 +32,8 @@ pub struct AnthropicProvider {
     /// user configured the deepseek alias) instead of a hardcoded
     /// "Anthropic".
     label: String,
+    /// Disable the provider's thinking mode when configured.
+    thinking_disabled: bool,
 }
 
 /// Default Anthropic API base URL.
@@ -68,6 +70,7 @@ impl AnthropicProvider {
             temperature: config.temperature,
             client: reqwest::Client::new(),
             label,
+            thinking_disabled: config.thinking_disabled,
         })
     }
 
@@ -111,6 +114,9 @@ impl LlmProvider for AnthropicProvider {
             "temperature": self.temperature,
             "messages": anthropic_messages_to_json(&chat_messages),
         });
+        if self.thinking_disabled {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
 
         if !system_prompt.is_empty() {
             body["system"] = serde_json::Value::String(system_prompt);
@@ -233,6 +239,9 @@ fn stream_body(
         "stream": stream,
         "messages": anthropic_messages_to_json(&chat_messages),
     });
+    if provider.thinking_disabled {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+    }
 
     if !system_prompt.is_empty() {
         body["system"] = serde_json::Value::String(system_prompt);
