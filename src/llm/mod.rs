@@ -19,8 +19,10 @@ pub use provider::LlmProvider;
 pub enum StreamEvent {
     /// A text token delta.
     TextDelta(String),
-    /// The stream finished with this reason.
-    Done(FinishReason),
+    /// The stream finished with this reason; `usage` carries the final
+    /// usage block when the endpoint emits one (e.g. Anthropic-style
+    /// `message_delta.usage`).
+    Done { reason: FinishReason, usage: Option<Usage> },
 }
 
 /// Role of a chat message participant.
@@ -92,7 +94,7 @@ pub struct LlmResponse {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

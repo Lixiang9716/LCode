@@ -119,13 +119,27 @@ pub use worktree::{register as register_worktree_tools, EventLog, WorktreeManage
 ///
 /// Thin wrapper over [`run_task_with_memory`] with a fresh, empty
 /// conversation memory.
+/// Outcome of a session: did it finish normally or abort?
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TaskOutcome {
+    /// The session ended because the model stopped (true) rather than
+    /// being aborted by max turns / an interrupt (false).
+    pub completed: bool,
+    /// Turns consumed before the session ended.
+    pub turns: u32,
+}
+
+/// Run a single-shot agent task.
+///
+/// Thin wrapper over [`run_task_with_memory`] with a fresh, empty
+/// conversation memory.
 pub async fn run_task(
     task: &str,
     max_turns: u32,
     auto_approve: bool,
     stream: bool,
     config: &Config,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TaskOutcome> {
     run_task_with_memory(task, max_turns, auto_approve, stream, config, None).await
 }
 
@@ -226,7 +240,7 @@ pub async fn run_task_with_memory(
     stream: bool,
     config: &Config,
     initial_memory: Option<ConversationMemory>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TaskOutcome> {
     // Build the provider, tool registry, hooks, runtime and all session
     // tools. The provider powers the main loop, the compaction tool and
     // the teammate loops; the event bus keeps every session component
@@ -312,7 +326,7 @@ async fn execute_session(
     background: Arc<BackgroundManager>,
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TaskOutcome> {
     // Audit trail: every event (turns, tool calls, subagents, background
     // tasks, team messages, ...) lands in `.transcripts/events_{ts}.jsonl`
     // with a timestamp, in arrival order. Fire-and-forget; the task ends
@@ -352,6 +366,7 @@ async fn execute_session(
     // The executor owns the event-bus sender (via its runtime). Drop it
     // before awaiting the renderer, or the renderer never observes the
     // channel close and the process hangs after the task completes.
+    let outcome = TaskOutcome { completed: !executor.aborted, turns: executor.last_turn };
     drop(executor);
 
     // Teammate loops hold the team event bus; without a shutdown signal
@@ -361,7 +376,7 @@ async fn execute_session(
 
     let _ = renderer.await;
     let _ = recorder.await;
-    Ok(())
+    Ok(outcome)
 }
 
 /// Kind of LLM backend a provider alias resolves to.

@@ -80,10 +80,10 @@ fn render_capability_event(event: &AgentEvent) {
                 transcript_path
             );
         }
-        AgentEvent::SubagentSpawned { prompt } => {
+        AgentEvent::SubagentSpawned { prompt, .. } => {
             println!("\n🧵 Subagent spawned: {}", truncate(prompt, 100));
         }
-        AgentEvent::SubagentCompleted { summary } => {
+        AgentEvent::SubagentCompleted { summary, .. } => {
             println!("\n🧵 Subagent finished: {}", truncate(summary, 200));
         }
         AgentEvent::BackgroundTaskStarted { id, command } => {
@@ -122,9 +122,14 @@ pub fn spawn_renderer(
     commands: mpsc::Sender<AgentCommand>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // Streaming deltas print inline; the first non-delta event after
+        // a run of deltas closes the line (the typewriter's newline).
+        let mut in_delta = false;
         loop {
             let keep_going = match events.recv().await {
                 Ok(event) => {
+                    let is_delta = matches!(event, AgentEvent::TextDelta { .. });
+                    in_delta = newline_after_deltas(in_delta, is_delta);
                     render_event(&event);
                     // Approval prompts read stdin and answer on the
                     // command channel; a broken channel ends the loop.
@@ -143,6 +148,14 @@ pub fn spawn_renderer(
             }
         }
     })
+}
+
+/// Close the typewriter line when a run of streamed deltas ends.
+fn newline_after_deltas(in_delta: bool, is_delta: bool) -> bool {
+    if in_delta && !is_delta {
+        println!();
+    }
+    is_delta
 }
 
 /// Answer an approval prompt (when the event requests one) and return

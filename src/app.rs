@@ -18,7 +18,13 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
                 anyhow::bail!("Task description cannot be empty. Usage: lcode run \"<task>\"");
             }
             tracing::info!(task = %task_desc, max_turns, stream, "Starting single-shot task");
-            crate::agent::run_task(&task_desc, max_turns, auto_approve, stream, &cfg).await?;
+            let outcome =
+                crate::agent::run_task(&task_desc, max_turns, auto_approve, stream, &cfg).await?;
+            if !outcome.completed {
+                // Non-zero exit so scripts can distinguish an aborted
+                // session (e.g. max turns) from a finished one.
+                std::process::exit(2);
+            }
         }
         Command::Config { action } => {
             crate::config::handle_command(action)?;
@@ -66,15 +72,20 @@ async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()
                 cfg.agent.system_prompt.clone(),
                 snapshot.messages,
             );
-            crate::agent::run_task_with_memory(
+            // `require_approval` negates auto-approve (same inversion
+            // bug class as the REPL fix).
+            let outcome = crate::agent::run_task_with_memory(
                 &snapshot.task,
                 cfg.agent.max_turns,
-                cfg.agent.require_approval,
+                !cfg.agent.require_approval,
                 false,
                 &cfg,
                 Some(memory),
             )
             .await?;
+            if !outcome.completed {
+                std::process::exit(2);
+            }
         }
     }
     Ok(())

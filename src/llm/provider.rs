@@ -42,7 +42,10 @@ pub trait LlmProvider: Send + Sync {
         if !response.content.is_empty() {
             events.push(Ok(StreamEvent::TextDelta(response.content.clone())));
         }
-        events.push(Ok(StreamEvent::Done(response.finish_reason)));
+        events.push(Ok(StreamEvent::Done {
+            reason: response.finish_reason,
+            usage: Some(response.usage.clone()),
+        }));
         Ok(Box::pin(futures::stream::iter(events)))
     }
 

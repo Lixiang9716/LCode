@@ -28,6 +28,10 @@ pub struct AnthropicProvider {
     max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
+    /// Provider label used in error messages (e.g. "deepseek" when the
+    /// user configured the deepseek alias) instead of a hardcoded
+    /// "Anthropic".
+    label: String,
 }
 
 /// Default Anthropic API base URL.
@@ -51,6 +55,11 @@ impl AnthropicProvider {
 
     fn new_with_key(api_key: String, config: &LlmConfig) -> anyhow::Result<Self> {
         let api_base = config.api_base.clone().unwrap_or_else(|| DEFAULT_API_BASE.to_string());
+        let label = if config.provider.is_empty() {
+            "anthropic".to_string()
+        } else {
+            config.provider.clone()
+        };
         Ok(Self {
             api_key,
             model: Mutex::new(config.model.clone()),
@@ -58,6 +67,7 @@ impl AnthropicProvider {
             max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
             client: reqwest::Client::new(),
+            label,
         })
     }
 
@@ -123,7 +133,7 @@ impl LlmProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await?;
-            anyhow::bail!("Anthropic API error ({}): {}", status, text);
+            anyhow::bail!("{} API error ({}): {}", self.label, status, text);
         }
 
         let data: serde_json::Value = response.json().await?;
@@ -157,7 +167,7 @@ impl LlmProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await?;
-            anyhow::bail!("Anthropic API error ({}): {}", status, text);
+            anyhow::bail!("{} API error ({}): {}", self.label, status, text);
         }
 
         let stream = sse_stream(response).filter_map(|item| async move {
@@ -257,12 +267,21 @@ pub fn anthropic_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
         }
         Some("message_delta") => {
             let stop_reason = data["delta"]["stop_reason"].as_str();
-            Some(StreamEvent::Done(match stop_reason {
-                Some("end_turn") => FinishReason::Stop,
-                Some("max_tokens") => FinishReason::Length,
-                Some("tool_use") => FinishReason::ToolCalls,
-                _ => FinishReason::Unknown,
-            }))
+            let usage = data.get("usage").map(|usage| crate::llm::Usage {
+                prompt_tokens: usage["input_tokens"].as_u64().unwrap_or(0) as u32,
+                completion_tokens: usage["output_tokens"].as_u64().unwrap_or(0) as u32,
+                total_tokens: usage["input_tokens"].as_u64().unwrap_or(0) as u32
+                    + usage["output_tokens"].as_u64().unwrap_or(0) as u32,
+            });
+            Some(StreamEvent::Done {
+                reason: match stop_reason {
+                    Some("end_turn") => FinishReason::Stop,
+                    Some("max_tokens") => FinishReason::Length,
+                    Some("tool_use") => FinishReason::ToolCalls,
+                    _ => FinishReason::Unknown,
+                },
+                usage,
+            })
         }
         // End-of-message sentinel: emits nothing. The finish reason
         // comes exclusively from `message_delta.stop_reason`; a fallback

@@ -43,7 +43,7 @@ fn streaming_executor() -> (Executor, tokio::sync::broadcast::Receiver<AgentEven
         Ok(Box::pin(futures::stream::iter(vec![
             Ok(StreamEvent::TextDelta("Hello ".to_string())),
             Ok(StreamEvent::TextDelta("world".to_string())),
-            Ok(StreamEvent::Done(FinishReason::Stop)),
+            Ok(StreamEvent::Done { reason: FinishReason::Stop, usage: None }),
         ])))
     });
     mock.expect_name().times(0..).return_const("mock".to_string());
@@ -175,11 +175,11 @@ async fn test_streaming_tool_call_falls_back_to_chat() {
     mock.expect_chat_stream().times(0..).returning(move |_messages, _tools| {
         let n = turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let events = if n == 0 {
-            vec![Ok(StreamEvent::Done(FinishReason::ToolCalls))]
+            vec![Ok(StreamEvent::Done { reason: FinishReason::ToolCalls, usage: None })]
         } else {
             vec![
                 Ok(StreamEvent::TextDelta("done".to_string())),
-                Ok(StreamEvent::Done(FinishReason::Stop)),
+                Ok(StreamEvent::Done { reason: FinishReason::Stop, usage: None }),
             ]
         };
         Ok(Box::pin(futures::stream::iter(events)))

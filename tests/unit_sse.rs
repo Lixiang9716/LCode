@@ -119,7 +119,7 @@ fn openai_chunk_maps_finish_reason() {
         let chunk = serde_json::json!({ "choices": [{ "delta": {}, "finish_reason": reason }] });
         assert_eq!(
             openai_stream_event(&chunk),
-            Some(StreamEvent::Done(expected)),
+            Some(StreamEvent::Done { reason: expected, usage: None }),
             "finish_reason {reason}"
         );
     }
@@ -180,7 +180,7 @@ fn anthropic_message_delta_maps_stop_reason() {
         });
         assert_eq!(
             anthropic_stream_event(&event),
-            Some(StreamEvent::Done(expected)),
+            Some(StreamEvent::Done { reason: expected, usage: None }),
             "stop_reason {reason}"
         );
     }
@@ -219,7 +219,7 @@ async fn retry_provider_forwards_chat_stream() {
         Ok(Box::pin(futures::stream::iter(vec![
             Ok(StreamEvent::TextDelta("Hello ".to_string())),
             Ok(StreamEvent::TextDelta("world".to_string())),
-            Ok(StreamEvent::Done(FinishReason::Stop)),
+            Ok(StreamEvent::Done { reason: FinishReason::Stop, usage: None }),
         ])))
     });
     mock.expect_name().times(0..).return_const("mock".to_string());
@@ -236,7 +236,7 @@ async fn retry_provider_forwards_chat_stream() {
         vec![
             StreamEvent::TextDelta("Hello ".to_string()),
             StreamEvent::TextDelta("world".to_string()),
-            StreamEvent::Done(FinishReason::Stop),
+            StreamEvent::Done { reason: FinishReason::Stop, usage: None },
         ]
     );
 }
@@ -259,7 +259,10 @@ fn anthropic_message_stop_emits_no_event() {
         "type": "message_delta",
         "delta": { "stop_reason": "tool_use" }
     });
-    assert_eq!(anthropic_stream_event(&tool_use), Some(StreamEvent::Done(FinishReason::ToolCalls)));
+    assert_eq!(
+        anthropic_stream_event(&tool_use),
+        Some(StreamEvent::Done { reason: FinishReason::ToolCalls, usage: None })
+    );
 }
 
 /// The OpenAI `finish_reason` chunk maps to `Done`, and remains the only
@@ -270,9 +273,15 @@ fn openai_finish_reason_chunk_maps_to_done() {
     let tool_calls = serde_json::json!({
         "choices": [{ "delta": {}, "finish_reason": "tool_calls" }]
     });
-    assert_eq!(openai_stream_event(&tool_calls), Some(StreamEvent::Done(FinishReason::ToolCalls)));
+    assert_eq!(
+        openai_stream_event(&tool_calls),
+        Some(StreamEvent::Done { reason: FinishReason::ToolCalls, usage: None })
+    );
     let stop = serde_json::json!({
         "choices": [{ "delta": {}, "finish_reason": "stop" }]
     });
-    assert_eq!(openai_stream_event(&stop), Some(StreamEvent::Done(FinishReason::Stop)));
+    assert_eq!(
+        openai_stream_event(&stop),
+        Some(StreamEvent::Done { reason: FinishReason::Stop, usage: None })
+    );
 }

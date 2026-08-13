@@ -24,6 +24,14 @@ use std::sync::Arc;
 /// call (the result records the block) exactly like the executor's
 /// `handle_tool_call`, so permission policies cannot be bypassed by
 /// delegating work to a subagent. `None` keeps the pre-G12 behavior.
+/// Monotonic subagent id: `sub-<seq>` unique within a process, so a
+/// `SubagentSpawned` event can be correlated with its completion.
+fn next_subagent_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    format!("sub-{}", SEQ.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
 pub async fn run_subagent(
     prompt: &str,
     provider: Arc<dyn crate::llm::LlmProvider>,
@@ -33,13 +41,20 @@ pub async fn run_subagent(
     events: Option<tokio::sync::broadcast::Sender<crate::agent::AgentEvent>>,
     subagent_cfg: &crate::config::SubagentConfig,
 ) -> anyhow::Result<String> {
+    let subagent_id = next_subagent_id();
     if let Some(tx) = &events {
-        let _ = tx.send(crate::agent::AgentEvent::SubagentSpawned { prompt: prompt.to_string() });
+        let _ = tx.send(crate::agent::AgentEvent::SubagentSpawned {
+            id: subagent_id.clone(),
+            prompt: prompt.to_string(),
+        });
     }
     let summary =
         run_subagent_loop(prompt, provider, registry, max_turns, hooks, subagent_cfg).await?;
     if let Some(tx) = &events {
-        let _ = tx.send(crate::agent::AgentEvent::SubagentCompleted { summary: summary.clone() });
+        let _ = tx.send(crate::agent::AgentEvent::SubagentCompleted {
+            id: subagent_id,
+            summary: summary.clone(),
+        });
     }
     Ok(summary)
 }

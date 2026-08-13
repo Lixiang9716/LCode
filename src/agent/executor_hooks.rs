@@ -137,3 +137,18 @@ impl Executor {
         }
     }
 }
+
+/// Run the turn-start injections: background results (s08), cron
+/// triggers (s14) and the lead's team inbox (s15).
+pub(crate) fn inject_turn_start(executor: &mut Executor, memory: &mut ConversationMemory) {
+    executor.inject_background_results(memory);
+    executor.inject_cron_triggers(memory);
+    executor.inject_lead_inbox(memory);
+}
+
+/// Add one response's usage into the running session total.
+pub(crate) fn accumulate_usage(total: &mut crate::llm::Usage, usage: &crate::llm::Usage) {
+    total.prompt_tokens += usage.prompt_tokens;
+    total.completion_tokens += usage.completion_tokens;
+    total.total_tokens += usage.total_tokens;
+}
