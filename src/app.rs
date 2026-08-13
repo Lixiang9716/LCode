@@ -38,6 +38,14 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Assets { action } => {
             handle_assets(action)?;
         }
+        Command::Doctor => {
+            crate::doctor::run(&cfg).await?;
+        }
+        Command::Events { last } => {
+            let dir = crate::agent::workspace_root()?.join(".transcripts");
+            let report = crate::events::analyze(&dir, last)?;
+            println!("{}", crate::events::render(&report));
+        }
     }
     Ok(())
 }

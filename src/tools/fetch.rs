@@ -45,8 +45,13 @@ pub(crate) fn host_matches(host: &str, entry: &str) -> bool {
 /// channel bridge keeps the `Tool` trait synchronous. The plain async
 /// client is used (no `blocking` feature — it roughly doubled the
 /// cold-build cost).
-type FetchJob =
-    (String, u64, usize, std::sync::mpsc::SyncSender<anyhow::Result<(Vec<u8>, Option<String>)>>);
+type FetchJob = (
+    String,
+    u64,
+    usize,
+    Option<String>,
+    std::sync::mpsc::SyncSender<anyhow::Result<(Vec<u8>, Option<String>)>>,
+);
 static FETCHER: std::sync::OnceLock<std::sync::mpsc::SyncSender<FetchJob>> =
     std::sync::OnceLock::new();
 
@@ -72,8 +77,14 @@ fn fetcher_loop(rx: std::sync::mpsc::Receiver<FetchJob>) {
         .enable_all()
         .build()
         .expect("fetcher runtime builds");
-    for (url, timeout_secs, max_bytes, reply) in rx.iter() {
-        let result = runtime.block_on(fetch_on_thread(&client, &url, timeout_secs, max_bytes));
+    for (url, timeout_secs, max_bytes, auth, reply) in rx.iter() {
+        let result = runtime.block_on(fetch_on_thread(
+            &client,
+            &url,
+            timeout_secs,
+            max_bytes,
+            auth.as_deref(),
+        ));
         let _ = reply.send(result);
     }
 }
@@ -84,8 +95,13 @@ async fn fetch_on_thread(
     url: &str,
     timeout_secs: u64,
     max_bytes: usize,
+    auth: Option<&str>,
 ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
-    let mut response = client.get(url).timeout(Duration::from_secs(timeout_secs)).send().await?;
+    let mut request = client.get(url).timeout(Duration::from_secs(timeout_secs));
+    if let Some(auth) = auth {
+        request = request.header(reqwest::header::AUTHORIZATION, auth);
+    }
+    let mut response = request.send().await?;
     if !response.status().is_success() {
         anyhow::bail!("fetch failed with HTTP status {}", response.status());
     }
@@ -140,7 +156,22 @@ pub fn fetch_url(url: &str, cfg: &ToolsConfig) -> anyhow::Result<(Vec<u8>, Optio
     host_allowed(&host, cfg)?;
 
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let job = (url.to_string(), cfg.fetch_timeout_secs, cfg.max_fetch_bytes, tx);
+    let job = (url.to_string(), cfg.fetch_timeout_secs, cfg.max_fetch_bytes, None, tx);
+    fetcher().send(job)?;
+    rx.recv().map_err(|_| anyhow::anyhow!("fetcher thread terminated"))?
+}
+
+/// Fetch with an Authorization header (used by the doctor's DeepSeek
+/// balance check); host policy does not apply — callers gate the
+/// endpoint themselves.
+pub fn fetch_json_with_auth(
+    url: &str,
+    timeout_secs: u64,
+    max_bytes: usize,
+    auth: Option<String>,
+) -> anyhow::Result<(Vec<u8>, Option<String>)> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let job = (url.to_string(), timeout_secs, max_bytes, auth, tx);
     fetcher().send(job)?;
     rx.recv().map_err(|_| anyhow::anyhow!("fetcher thread terminated"))?
 }

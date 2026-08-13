@@ -84,6 +84,17 @@ pub enum Command {
         #[command(subcommand)]
         action: AssetsAction,
     },
+
+    /// Environment health check (toolchain, config, assets, sandbox,
+    /// balance)
+    Doctor,
+
+    /// Analyze session event logs under .transcripts/
+    Events {
+        /// Only the most recent N event files
+        #[arg(long)]
+        last: Option<usize>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
