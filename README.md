@@ -132,20 +132,20 @@ graph TD
 
 | Tool | Description |
 |------|-------------|
-| `read_file` | Read file contents with line numbers |
-| `write_file` | Create or overwrite a file |
-| `edit_file` | Find-and-replace in files |
-| `list_dir` | List directory contents |
+| `read_file` | Read a file or an http(s) URL with line numbers (sensitive paths refused, secrets redacted, binary blocked) |
+| `write_file` | Create/overwrite a file, edit in place via `replace`, or fetch an http(s) URL into the path |
 | `grep` | Search file contents with regex |
 | `glob` | Find files by pattern |
 | `shell` | Execute shell commands |
 
 ## 🔒 Safety Features
 
-- **Tool Approval**: By default, every tool call requires user confirmation
+- **Tool Approval**: By default, every tool call requires user confirmation; URL fetches additionally require approval even under `--auto-approve` (`tools.network_requires_approval`)
 - **Command Filtering**: Dangerous commands (`rm -rf /`, `sudo`, `mkfs`) are blocked
 - **Timeout Protection**: Shell commands timeout after 120 seconds
-- **Allow/Deny Lists**: Customize which commands are permitted
+- **Allow/Deny Lists**: Customize which commands, directories and fetch hosts are permitted (`allowed_dirs` / `allowed_hosts` / `denied_hosts` — loopback and cloud-metadata hosts are denied by default)
+- **Information Filtering**: `read_file` refuses sensitive paths (`.env*`, `.lcode.toml`, `*.pem`, keys) and redacts detected secrets (sk-/AKIA/ghp_ patterns, PEM blocks, high-entropy `password="..."` assignments) before content reaches the model
+- **Secret Hygiene**: the API key is `secrecy::SecretString` — `Debug` output is redacted
 
 ## 📝 Configuration Reference
 
@@ -228,10 +228,19 @@ command_capacity = 64          # command channel buffer
 max_items = 20
 
 [tools]
-allowed_dirs = []
+allowed_dirs = []              # read/write 允许目录（空 = 工作区根，含 URL 写入目标）
 allowed_commands = []
 denied_commands = ["rm -rf /", "sudo", "chmod 777", "mkfs"]
 enable_web = true              # deepseek 端点自动启用服务端 web_search 工具
+max_fetch_bytes = 52428800     # 单次 URL 抓取上限（超限中止并清理）
+fetch_timeout_secs = 60
+allowed_hosts = []             # 抓取主机白名单（空 = 全放行）
+denied_hosts = ["127.0.0.1", "localhost", "::1", "169.254.169.254",
+                "metadata.google.internal", "*.internal", "*.local"]  # SSRF 默认拒绝
+sensitive_paths = [".env", ".env.*", ".lcode.toml", "*.pem", "id_rsa*", ".ssh/*"]
+scrub_secrets = true           # read_file 输出红化检测到的密钥
+network_requires_approval = true
+                               # URL 抓取忽略 auto_approve 强制走审批
 ```
 
 Each value can also be overridden per invocation via its `LCODE_*`
@@ -303,3 +312,19 @@ cargo build --release
 ## 📄 License
 
 MIT © [Lixiang9716](https://github.com/Lixiang9716)
+
+## 📦 Resource Management（一切皆文件）
+
+文件 / 网络 / 环境 / 凭证 / 工具链 / 服务 / 配额七类资源统一为 `assets/` 目录下的普通文件 +
+同名 sidecar（`<name>.meta.json`，tagged `kind` JSON）。**目录列表就是索引**——无数据库、无锁，
+可用 shell 直接管理；约定由内置 `assets` skill 承载（会话启动时自动写入
+`<workspace>/skills/assets/SKILL.md`，已存在则绝不覆盖，用户可自行修改）。
+
+- 注册/检查/删除：read_file + write_file + bash 按 skill 流程完成
+  （sha256sum 校验完整性、curl -sI 健康检查、`test -n "${VAR+x}"` 环境存在性、
+  `<cmd> --version` 工具链版本、`nc -z` 服务探活、`GET /user/balance` 余额）。
+- 获取：`write_file {path, url}` / `read_file {path: "https://..."}`（受 enable_web、
+  主机策略、大小上限、审批门控）。
+- 安全红线：sidecar 永不存密钥值（只记存在性）；read_file 拒绝敏感路径并红化密钥内容；
+  提交前深扫可选 `gitleaks`/`secrets_scanner` CLI（skill 内置约定）。
+

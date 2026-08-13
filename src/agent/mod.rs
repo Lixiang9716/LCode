@@ -29,6 +29,7 @@ use crate::tools::ToolRegistry;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod assets_skill;
 mod background;
 mod compaction;
 mod cron;
@@ -61,6 +62,7 @@ mod todo;
 mod usage_tracking;
 mod worktree;
 
+pub use assets_skill::{ensure_assets_skill, ASSETS_SKILL};
 pub use background::{
     register as register_background_tools, BackgroundCheckTool, BackgroundManager,
     BackgroundRunTool, BackgroundStatus, BackgroundTask,
@@ -181,6 +183,9 @@ fn build_session(
     todo::register(&mut registry, todo.clone(), Some(runtime.events_sender()));
 
     let skills_dir = config.agent.skills_dir.clone().unwrap_or_else(|| workspace.join("skills"));
+    // Built-in skills ship as files too: materialize the assets skill
+    // when missing (never overwriting user edits), then load the dir.
+    assets_skill::ensure_assets_skill(&skills_dir);
     skill::register(&mut registry, skills_dir.clone(), Some(runtime.events_sender()));
 
     let compact_request = Arc::new(Mutex::new(None));
