@@ -306,6 +306,8 @@ pub struct RuntimeTuning {
     pub self_review: bool,
     /// Restart rounds allowed for self-review fixes.
     pub self_review_max_rounds: u32,
+    /// Workspace-context injection at turn start.
+    pub workspace_aware: bool,
 }
 
 impl RuntimeTuning {
@@ -328,6 +330,7 @@ impl RuntimeTuning {
             test_until_green: cfg.agent.test_until_green,
             self_review: cfg.agent.self_review,
             self_review_max_rounds: cfg.agent.self_review_max_rounds,
+            workspace_aware: cfg.agent.workspace_aware,
         }
     }
 }

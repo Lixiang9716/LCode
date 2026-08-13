@@ -62,6 +62,7 @@ mod team;
 mod teammate;
 mod todo;
 mod usage_tracking;
+mod workspace;
 mod worktree;
 
 pub use assets_skill::{ensure_assets_skill, ASSETS_SKILL};
