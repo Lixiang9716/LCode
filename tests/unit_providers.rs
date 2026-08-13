@@ -10,7 +10,7 @@ fn config_with(provider: &str, api_key: &str) -> Config {
     Config {
         llm: LlmConfig {
             provider: provider.to_string(),
-            api_key: api_key.to_string(),
+            api_key: secrecy::SecretString::from(api_key.to_string()),
             model: "test-model".to_string(),
             ..LlmConfig::default()
         },
@@ -76,7 +76,11 @@ fn openai_compatible_alias_without_key_mentions_openai() {
 
 #[test]
 fn anthropic_provider_defaults_to_official_api_base() {
-    let cfg = LlmConfig { api_key: "test-key".to_string(), api_base: None, ..LlmConfig::default() };
+    let cfg = LlmConfig {
+        api_key: secrecy::SecretString::from("test-key"),
+        api_base: None,
+        ..LlmConfig::default()
+    };
     let provider = lcode::llm::anthropic::AnthropicProvider::new(&cfg).unwrap();
     assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
 }
@@ -84,7 +88,7 @@ fn anthropic_provider_defaults_to_official_api_base() {
 #[test]
 fn anthropic_provider_uses_custom_api_base() {
     let cfg = LlmConfig {
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         api_base: Some("https://api.deepseek.com/anthropic".to_string()),
         ..LlmConfig::default()
     };

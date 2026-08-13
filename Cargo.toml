@@ -72,6 +72,7 @@ regex-lite = "0.1"
 # Mocking for the LlmProvider trait (used by tests/unit_agent.rs; the
 # automock is compiled unconditionally so integration tests can use it)
 mockall = "0.13"
+secrecy = { version = "0.10.3", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"

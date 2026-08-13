@@ -25,7 +25,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn dummy_openai_config() -> LlmConfig {
     LlmConfig {
         provider: "openai".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "deepseek-v4-flash".to_string(),
         api_base: Some("https://api.deepseek.com".to_string()),
         ..LlmConfig::default()
@@ -35,7 +35,7 @@ fn dummy_openai_config() -> LlmConfig {
 fn dummy_anthropic_config(api_base: Option<&str>) -> LlmConfig {
     LlmConfig {
         provider: "deepseek".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "deepseek-v4-flash".to_string(),
         api_base: api_base.map(str::to_string),
         ..LlmConfig::default()
@@ -106,7 +106,7 @@ async fn internal_provider_forces_thinking_disabled() {
 
     let llm = LlmConfig {
         provider: "openai_compatible".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "deepseek-v4-flash".to_string(),
         api_base: Some(server.uri()),
         ..LlmConfig::default()

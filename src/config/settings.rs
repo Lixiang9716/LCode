@@ -4,6 +4,7 @@ use crate::config::tuning::{
     BackgroundConfig, CompactionConfig, EventsConfig, MemoryConfig, RetryConfig, SubagentConfig,
     TeamConfig, TodoConfig,
 };
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 /// Main configuration structure.
@@ -61,9 +62,13 @@ pub struct LlmConfig {
     #[serde(default = "default_provider")]
     pub provider: String,
 
-    /// API key for the provider
-    #[serde(default)]
-    pub api_key: String,
+    /// API key for the provider. `SecretString` redacts the value in
+    /// `Debug` output and requires an explicit `expose_secret` to read
+    /// it; serialization to config files stays plaintext (secrecy
+    /// deliberately blocks `Serialize` for secrets, so a custom
+    /// serializer is wired here).
+    #[serde(default, serialize_with = "serialize_secret")]
+    pub api_key: SecretString,
 
     /// Model name to use
     #[serde(default = "default_model")]
@@ -126,7 +131,7 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             provider: default_provider(),
-            api_key: String::new(),
+            api_key: SecretString::from(String::new()),
             model: default_model(),
             api_base: None,
             max_tokens: default_max_tokens(),
@@ -262,6 +267,15 @@ impl Default for ToolsConfig {
             scrub_secrets: default_scrub_secrets(),
         }
     }
+}
+
+/// Serialize a secret to plaintext (config files are the intended,
+/// user-owned storage; in-memory `Debug` stays redacted).
+fn serialize_secret<S: serde::Serializer>(
+    value: &SecretString,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(secrecy::ExposeSecret::expose_secret(value))
 }
 
 // Default value functions. `pub(super)` so `config` module can use them in

@@ -36,7 +36,7 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     /// Create a new OpenAI provider from configuration.
     pub fn new(config: &LlmConfig) -> anyhow::Result<Self> {
-        if config.api_key.is_empty() {
+        if secrecy::ExposeSecret::expose_secret(&config.api_key).is_empty() {
             anyhow::bail!(
                 "OpenAI API key is required. Set it via: lcode config set llm.api_key <key>"
             );
@@ -54,7 +54,7 @@ impl OpenAiProvider {
         };
 
         Ok(Self {
-            api_key: config.api_key.clone(),
+            api_key: secrecy::ExposeSecret::expose_secret(&config.api_key).to_string(),
             model: Mutex::new(config.model.clone()),
             api_base,
             max_tokens: AtomicU32::new(config.max_tokens),

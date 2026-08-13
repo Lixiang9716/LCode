@@ -108,7 +108,7 @@ impl Match for AuthHeaderCapture {
 fn provider_for(server: &MockServer) -> OpenAiProvider {
     let config = LlmConfig {
         provider: "openai".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "gpt-4o-mini".to_string(),
         api_base: Some(format!("{}/v1", server.uri())),
         max_tokens: 256,
@@ -303,7 +303,7 @@ enable_web = false
 
     // Defaults are "anthropic" / "claude-sonnet-4-20250514" / 8192 / 0.3.
     assert_eq!(cfg.llm.provider, "openai");
-    assert_eq!(cfg.llm.api_key, "sk-test-123");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key), "sk-test-123");
     assert_eq!(cfg.llm.model, "gpt-4o");
     assert_eq!(cfg.llm.max_tokens, 4096);
     assert_eq!(cfg.llm.temperature, 0.7);

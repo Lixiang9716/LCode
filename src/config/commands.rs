@@ -53,7 +53,7 @@ pub fn handle_command(action: ConfigAction) -> anyhow::Result<()> {
 pub fn get_config_value(cfg: &Config, key: &str) -> anyhow::Result<String> {
     match key {
         "llm.provider" => Ok(cfg.llm.provider.clone()),
-        "llm.api_key" => Ok(mask_key(&cfg.llm.api_key)),
+        "llm.api_key" => Ok(mask_key(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key))),
         "llm.model" => Ok(cfg.llm.model.clone()),
         "llm.api_base" => Ok(cfg.llm.api_base.clone().unwrap_or_default()),
         "llm.max_tokens" => Ok(cfg.llm.max_tokens.to_string()),
@@ -135,7 +135,7 @@ fn set_field(cfg: &mut Config, key: &str, value: &str) -> anyhow::Result<()> {
 fn set_llm_value(llm: &mut crate::config::LlmConfig, key: &str, value: &str) -> anyhow::Result<()> {
     match key {
         "provider" => llm.provider = value.to_string(),
-        "api_key" => llm.api_key = value.to_string(),
+        "api_key" => llm.api_key = secrecy::SecretString::from(value.to_string()),
         "model" => llm.model = value.to_string(),
         "api_base" => llm.api_base = Some(value.to_string()),
         "max_tokens" => llm.max_tokens = value.parse()?,

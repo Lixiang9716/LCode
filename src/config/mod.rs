@@ -201,7 +201,7 @@ fn merge_llm(base: &mut LlmConfig, other: LlmConfig) {
     if !other.provider.is_empty() {
         base.provider = other.provider;
     }
-    if !other.api_key.is_empty() {
+    if !secrecy::ExposeSecret::expose_secret(&other.api_key).is_empty() {
         base.api_key = other.api_key;
     }
     if other.model != default_model() || !other.model.is_empty() {
@@ -241,7 +241,7 @@ fn apply_llm_env_overrides(llm: &mut LlmConfig) {
         llm.provider = val;
     }
     if let Ok(val) = std::env::var("LCODE_LLM_API_KEY") {
-        llm.api_key = val;
+        llm.api_key = secrecy::SecretString::from(val);
     }
     if let Ok(val) = std::env::var("LCODE_LLM_MODEL") {
         llm.model = val;

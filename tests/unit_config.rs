@@ -22,7 +22,7 @@ fn default_config_has_expected_values() {
     assert_eq!(cfg.llm.model, "claude-sonnet-4-20250514");
     assert_eq!(cfg.llm.max_tokens, 8192);
     assert_eq!(cfg.llm.temperature, 0.3);
-    assert!(cfg.llm.api_key.is_empty());
+    assert!(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key).is_empty());
     assert!(cfg.llm.api_base.is_none());
 
     // Agent settings
@@ -50,7 +50,7 @@ fn merge_config_non_empty_values_override_base() {
     let mut base = Config::default();
     let mut other = Config::default();
     other.llm.provider = "openai".into();
-    other.llm.api_key = "sk-merge-test".into();
+    other.llm.api_key = secrecy::SecretString::from("sk-merge-test");
     other.llm.model = "gpt-4o".into();
     other.llm.api_base = Some("https://api.example.com".into());
     other.llm.max_tokens = 4096;
@@ -66,7 +66,7 @@ fn merge_config_non_empty_values_override_base() {
     merge_config(&mut base, other);
 
     assert_eq!(base.llm.provider, "openai");
-    assert_eq!(base.llm.api_key, "sk-merge-test");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&base.llm.api_key), "sk-merge-test");
     assert_eq!(base.llm.model, "gpt-4o");
     assert_eq!(base.llm.api_base.as_deref(), Some("https://api.example.com"));
     assert_eq!(base.llm.max_tokens, 4096);
@@ -84,7 +84,7 @@ fn merge_config_non_empty_values_override_base() {
 fn merge_config_empty_values_keep_base() {
     let mut base = Config::default();
     base.llm.provider = "openai".into();
-    base.llm.api_key = "sk-base-key".into();
+    base.llm.api_key = secrecy::SecretString::from("sk-base-key");
     base.llm.model = "gpt-4o".into();
     base.llm.api_base = Some("https://base.example.com".into());
     base.llm.max_tokens = 4096;
@@ -102,7 +102,7 @@ fn merge_config_empty_values_keep_base() {
     // `merge_config_model_is_always_overridden`.)
     let mut other = Config::default();
     other.llm.provider.clear();
-    other.llm.api_key.clear();
+    other.llm.api_key = secrecy::SecretString::from(String::new());
     other.llm.api_base = None;
     other.llm.max_tokens = default_max_tokens();
     other.llm.temperature = default_temperature();
@@ -116,7 +116,7 @@ fn merge_config_empty_values_keep_base() {
     merge_config(&mut base, other);
 
     assert_eq!(base.llm.provider, "openai");
-    assert_eq!(base.llm.api_key, "sk-base-key");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&base.llm.api_key), "sk-base-key");
     assert_eq!(base.llm.api_base.as_deref(), Some("https://base.example.com"));
     assert_eq!(base.llm.max_tokens, 4096);
     assert_eq!(base.llm.temperature, 1.5);
@@ -177,7 +177,7 @@ fn apply_env_overrides_sets_all_llm_fields() {
     apply_env_overrides(&mut cfg);
 
     assert_eq!(cfg.llm.provider, "openai");
-    assert_eq!(cfg.llm.api_key, "sk-env-key");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key), "sk-env-key");
     assert_eq!(cfg.llm.model, "gpt-4o");
     assert_eq!(cfg.llm.api_base.as_deref(), Some("https://env.example.com"));
     assert_eq!(cfg.llm.max_tokens, 2048);
@@ -274,7 +274,7 @@ fn set_config_value_writes_global_config_file() {
     // Round-trip: parse the written file back into a Config.
     let parsed: Config = toml::from_str(&content).unwrap();
     assert_eq!(parsed.llm.provider, "openai");
-    assert_eq!(parsed.llm.api_key, "sk-secret-1234");
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&parsed.llm.api_key), "sk-secret-1234");
     assert_eq!(parsed.llm.model, "gpt-4o");
     assert_eq!(parsed.llm.api_base.as_deref(), Some("https://api.example.com"));
     assert_eq!(parsed.llm.max_tokens, 2048);
@@ -443,4 +443,14 @@ fn test_thinking_disabled_config() {
     apply_env_overrides(&mut cfg);
     assert!(cfg.llm.thinking_disabled);
     std::env::remove_var("LCODE_LLM_THINKING_DISABLED");
+}
+
+#[test]
+fn llm_config_debug_redacts_api_key() {
+    let mut cfg = Config::default();
+    cfg.llm.api_key = secrecy::SecretString::from("sk-super-secret-value-123");
+    let debug = format!("{:?}", cfg);
+    assert!(!debug.contains("sk-super-secret-value-123"), "Debug must redact the key: {debug}");
+    // The value is still readable via the explicit exposure path.
+    assert_eq!(secrecy::ExposeSecret::expose_secret(&cfg.llm.api_key), "sk-super-secret-value-123");
 }

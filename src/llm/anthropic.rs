@@ -59,7 +59,7 @@ const DEFAULT_API_BASE: &str = "https://api.anthropic.com/v1";
 impl AnthropicProvider {
     /// Create a new Anthropic provider from configuration.
     pub fn new(config: &LlmConfig) -> anyhow::Result<Self> {
-        if config.api_key.is_empty() {
+        if secrecy::ExposeSecret::expose_secret(&config.api_key).is_empty() {
             // Also check ANTHROPIC_API_KEY env var
             let env_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
             if env_key.is_empty() {
@@ -69,7 +69,10 @@ impl AnthropicProvider {
             }
             return Self::new_with_key(env_key, config);
         }
-        Self::new_with_key(config.api_key.clone(), config)
+        Self::new_with_key(
+            secrecy::ExposeSecret::expose_secret(&config.api_key).to_string(),
+            config,
+        )
     }
 
     #[doc(hidden)]

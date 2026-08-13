@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 fn deepseek_openai_config() -> LlmConfig {
     LlmConfig {
         provider: "openai_compatible".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "deepseek-v4-flash".to_string(),
         api_base: Some("https://api.deepseek.com".to_string()),
         ..LlmConfig::default()
@@ -25,7 +25,7 @@ fn deepseek_openai_config() -> LlmConfig {
 fn deepseek_anthropic_config() -> LlmConfig {
     LlmConfig {
         provider: "deepseek".to_string(),
-        api_key: "test-key".to_string(),
+        api_key: secrecy::SecretString::from("test-key"),
         model: "deepseek-v4-flash".to_string(),
         api_base: Some("https://api.deepseek.com/anthropic".to_string()),
         ..LlmConfig::default()
