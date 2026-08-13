@@ -73,6 +73,11 @@ pub struct Executor {
     pub(crate) memory_store: Option<Arc<crate::agent::MemoryStore>>,
     pub(crate) team_bus: Option<Arc<crate::agent::MessageBus>>,
     pub(crate) tuning: Option<Arc<crate::config::RuntimeTuning>>,
+    /// Whether the session ended via abort (e.g. max turns) instead
+    /// of finishing normally; surfaced to the CLI for the exit code.
+    pub(crate) aborted: bool,
+    /// Last turn counter reached before the session ended.
+    pub(crate) last_turn: u32,
 }
 
 impl Executor {
@@ -99,6 +104,8 @@ impl Executor {
             memory_store: session.memory_store,
             team_bus: session.team_bus,
             tuning: session.tuning,
+            aborted: false,
+            last_turn: 0,
         }
     }
 
@@ -129,7 +136,9 @@ impl Executor {
 
         self.runtime.publish(AgentEvent::SessionStarted { task: task.to_string() });
 
-        let (aborted, turn) = self.run_loop(&mut memory, max_turns, stream).await?;
+        let (aborted, turn, usage) = self.run_loop(&mut memory, max_turns, stream).await?;
+        self.aborted = aborted;
+        self.last_turn = turn;
 
         if !aborted {
             // G8: Stop hook (policy/observation at session end)
@@ -145,19 +154,16 @@ impl Executor {
             // conversation and consolidate the memory store.
             self.persist_memories(&memory).await;
 
-            let summary = response_usage_summary(&memory);
             self.runtime.publish(AgentEvent::TaskFinished {
                 turns: turn,
-                prompt_tokens: summary.0 as u32,
-                completion_tokens: summary.1 as u32,
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
             });
         }
 
         Ok(memory)
     }
 
-    /// Assemble the per-turn tool pool: built-in tools plus connected MCP
-    /// tools (namespaced `mcp__{server}__{tool}`, s19).
     /// Initialize a session: run the UserPromptSubmit hook, inject the
     /// plan echo, and assemble the system prompt from sections.
     ///
@@ -216,9 +222,10 @@ impl Executor {
         memory: &mut ConversationMemory,
         max_turns: u32,
         stream: bool,
-    ) -> anyhow::Result<(bool, u32)> {
+    ) -> anyhow::Result<(bool, u32, crate::llm::Usage)> {
         let mut turn = 0u32;
         let mut aborted = false;
+        let mut total_usage = crate::llm::Usage::default();
         loop {
             if turn >= max_turns {
                 self.runtime.publish(AgentEvent::TaskAborted {
@@ -233,11 +240,8 @@ impl Executor {
             self.runtime.publish(AgentEvent::TurnStarted { turn });
             tracing::debug!(turn, "Agent turn");
 
-            // Turn-start injections: background results (s08) and cron
-            // triggers (s14) arrive before the next LLM call.
-            self.inject_background_results(memory);
-            self.inject_cron_triggers(memory);
-            self.inject_lead_inbox(memory);
+            // Turn-start injections (s08 background, s14 cron, s15 inbox).
+            crate::agent::executor_hooks::inject_turn_start(self, memory);
 
             // Dynamic tool pool (s19) + context compaction (s06).
             let tool_defs = self.tool_pool();
@@ -263,6 +267,8 @@ impl Executor {
                 }
             };
 
+            crate::agent::executor_hooks::accumulate_usage(&mut total_usage, &response.usage);
+
             let finished = match self.handle_response(response, memory, stream).await? {
                 LoopControl::Stop => true,
                 LoopControl::Abort => {
@@ -279,7 +285,7 @@ impl Executor {
                 break;
             }
         }
-        Ok((aborted, turn))
+        Ok((aborted, turn, total_usage))
     }
 
     /// Handle a single LLM response.
@@ -483,11 +489,4 @@ fn record_declined(memory: &mut ConversationMemory, tool_name: &str, tool_call_i
         format!("Tool call declined by user: {}", tool_name),
         tool_call_id.to_string(),
     );
-}
-
-/// Get a summary of token usage from the conversation memory.
-fn response_usage_summary(memory: &ConversationMemory) -> (usize, usize, usize) {
-    let prompt_tokens = memory.approximate_tokens();
-    let completion_tokens = 0; // Would be tracked per-response in a full implementation
-    (prompt_tokens, completion_tokens, prompt_tokens + completion_tokens)
 }

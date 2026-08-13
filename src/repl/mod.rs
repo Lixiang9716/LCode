@@ -205,7 +205,7 @@ async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
                 config.agent.system_prompt.clone(),
                 snapshot.messages,
             );
-            if let Err(e) = crate::agent::run_task_with_memory(
+            match crate::agent::run_task_with_memory(
                 &snapshot.task,
                 config.agent.max_turns,
                 !config.agent.require_approval,
@@ -215,7 +215,11 @@ async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
             )
             .await
             {
-                eprintln!("Error: {e}");
+                Ok(outcome) if !outcome.completed => {
+                    print_aborted(outcome.turns);
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("Error: {e}"),
             }
         }
         Err(e) => println!("Error: {e}"),
@@ -266,6 +270,14 @@ fn print_help() {
     println!();
 }
 
+/// Print the aborted-session notice (max turns / interrupt).
+fn print_aborted(turns: u32) {
+    println!(
+        "
+⚠️  Task aborted after {turns} turns."
+    );
+}
+
 /// Process a user input as a task.
 async fn process_input(input: &str, config: &Config) -> anyhow::Result<()> {
     // The REPL stays on the plain (non-streamed) path; `lcode run
@@ -273,12 +285,20 @@ async fn process_input(input: &str, config: &Config) -> anyhow::Result<()> {
     // `require_approval` means tools need approval, so auto-approve is
     // its negation. Passing it directly inverted the semantics and made
     // the REPL auto-approve everything by default (E2E regression).
-    crate::agent::run_task(
+    let outcome = crate::agent::run_task(
         input,
         config.agent.max_turns,
         !config.agent.require_approval,
         false,
         config,
     )
-    .await
+    .await?;
+    if !outcome.completed {
+        println!(
+            "
+⚠️  Task aborted after {} turns.",
+            outcome.turns
+        );
+    }
+    Ok(())
 }

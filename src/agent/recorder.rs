@@ -15,16 +15,17 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Timestamp (unix seconds) shared with the compaction transcripts.
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default()
+/// Timestamp in unix milliseconds: events within the same second keep
+/// their relative order even when the file is re-sorted by `ts`.
+fn now_millis() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or_default()
 }
 
 /// `events_{ts}.jsonl`, with an increasing numeric suffix when a file
-/// for the same second already exists (two sessions starting in the same
+/// for the same tick already exists (two sessions starting in the same
 /// tick must not share a log).
 fn event_log_path(dir: &Path) -> std::path::PathBuf {
-    let base = now_secs();
+    let base = now_millis();
     let mut n = 0u64;
     loop {
         let name = if n == 0 {
@@ -43,7 +44,7 @@ fn event_log_path(dir: &Path) -> std::path::PathBuf {
 /// Append one event to the log file as `{"ts": <secs>, "event": {...}}`.
 fn append_event(file: &mut impl Write, event: &AgentEvent) {
     let line = serde_json::json!({
-        "ts": now_secs(),
+        "ts": now_millis(),
         "event": event,
     });
     if let Err(e) = serde_json::to_writer(&mut *file, &line) {

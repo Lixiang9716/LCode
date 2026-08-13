@@ -46,12 +46,16 @@ impl Executor {
         let mut stream = self.provider.chat_stream(context, tool_defs).await?;
         let mut content = String::new();
         let mut finish_reason = FinishReason::Unknown;
+        let mut usage = Usage::default();
         while let Some(event) = stream.next().await {
             match event? {
                 StreamEvent::TextDelta(delta) => {
                     publish_delta(&self.runtime, &mut content, delta);
                 }
-                StreamEvent::Done(reason) => finish_reason = reason,
+                StreamEvent::Done { reason, usage: done_usage } => {
+                    finish_reason = reason;
+                    usage = done_usage.unwrap_or(usage);
+                }
             }
         }
         if finish_reason == FinishReason::ToolCalls {
@@ -62,7 +66,7 @@ impl Executor {
             // authoritative content via handle_response.
             return self.provider.chat(context, tool_defs).await;
         }
-        Ok(LlmResponse { content, tool_calls: None, usage: Usage::default(), finish_reason })
+        Ok(LlmResponse { content, tool_calls: None, usage, finish_reason })
     }
 }
 

@@ -193,15 +193,29 @@ pub fn openai_stream_event(data: &serde_json::Value) -> Option<StreamEvent> {
             return Some(StreamEvent::TextDelta(content.to_string()));
         }
     }
+    // The final chunk may carry a usage block (e.g. when the endpoint
+    // streams with usage reporting); otherwise it stays `None`.
+    let usage = parse_usage(data);
+    let done = |reason| Some(StreamEvent::Done { reason, usage: usage.clone() });
     match choice["finish_reason"].as_str() {
-        Some("stop") => Some(StreamEvent::Done(FinishReason::Stop)),
-        Some("length") => Some(StreamEvent::Done(FinishReason::Length)),
-        Some("tool_calls") => Some(StreamEvent::Done(FinishReason::ToolCalls)),
-        Some("content_filter") => Some(StreamEvent::Done(FinishReason::ContentFilter)),
-        Some(_) => Some(StreamEvent::Done(FinishReason::Unknown)),
+        Some("stop") => done(FinishReason::Stop),
+        Some("length") => done(FinishReason::Length),
+        Some("tool_calls") => done(FinishReason::ToolCalls),
+        Some("content_filter") => done(FinishReason::ContentFilter),
+        Some(_) => done(FinishReason::Unknown),
         // `finish_reason` is null or absent: intermediate chunk.
         None => None,
     }
+}
+
+/// Parse the usage block of a streamed chunk when present.
+fn parse_usage(data: &serde_json::Value) -> Option<crate::llm::Usage> {
+    let usage = data.get("usage")?;
+    Some(crate::llm::Usage {
+        prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+        completion_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+        total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+    })
 }
 
 /// Convert an internal ChatMessage to OpenAI-compatible JSON.

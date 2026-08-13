@@ -60,10 +60,11 @@ pub enum AgentEvent {
     ContextCompacted { summary: String, transcript_path: String },
 
     // --- Subagents (s04) ---
-    /// A subagent was spawned with the given prompt.
-    SubagentSpawned { prompt: String },
+    /// A subagent was spawned with the given prompt; `id` correlates
+    /// the spawn with its `SubagentCompleted` event.
+    SubagentSpawned { id: String, prompt: String },
     /// A subagent finished and returned its summary.
-    SubagentCompleted { summary: String },
+    SubagentCompleted { id: String, summary: String },
 
     // --- Background tasks (s08) ---
     /// A background command started.
