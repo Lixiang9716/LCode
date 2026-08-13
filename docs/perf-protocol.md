@@ -34,9 +34,10 @@ cd /home/lx/LCode && /usr/bin/time -f "%e s" cargo nextest run 2>&1 | tail -2
 ```
 记录：通过/失败总数 + 墙钟秒。
 
-### P5. read 延迟（仅终验轮，绝对界限测试）
-改动轮在 `tests/unit_file_url.rs` 中内置"10MB 文本过 scrub 路径 < 200ms"断言测试；
-基线轮记录 N/A。终验轮记录该测试的实际耗时（nextest 报告）。
+### P5. read 延迟（绝对界限测试，回归绊线）
+`tests/unit_scrub.rs::scrub_10mb_text_under_200ms`：10MB 文本过 scrub 路径 < 2s
+（本机 ~145ms、共享 CI runner ~350ms；被否决的 secrets_scanner 后端为 4-13s——
+2s 界区分数量级回归，容忍跨机器方差）。基线轮记录 N/A。
 
 ## 真实 E2E（E2E agent，DeepSeek key）
 
