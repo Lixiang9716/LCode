@@ -35,14 +35,15 @@ fn host_matches(host: &str, entry: &str) -> bool {
     }
 }
 
-/// A dedicated fetcher thread owns the blocking reqwest client.
-///
-/// reqwest's blocking client builds and drops a tokio runtime; doing
-/// either from inside an async context (the executor runs tools
-/// synchronously within its async loop) panics with "Cannot drop a
-/// runtime in a context where blocking is not allowed". Owning the
-/// client on a plain OS thread keeps every build/use/drop in a sync
-/// context, and the channel bridge keeps the `Tool` trait synchronous.
+/// A dedicated fetcher thread owns the reqwest client and a
+/// current-thread tokio runtime. Building or dropping a runtime from
+/// inside an async context (the executor runs tools synchronously
+/// within its async loop) panics with "Cannot drop a runtime in a
+/// context where blocking is not allowed"; owning both on a plain OS
+/// thread keeps every build/use/drop in a sync context, and the
+/// channel bridge keeps the `Tool` trait synchronous. The plain async
+/// client is used (no `blocking` feature — it roughly doubled the
+/// cold-build cost).
 type FetchJob =
     (String, u64, usize, std::sync::mpsc::SyncSender<anyhow::Result<(Vec<u8>, Option<String>)>>);
 static FETCHER: std::sync::OnceLock<std::sync::mpsc::SyncSender<FetchJob>> =
@@ -54,12 +55,17 @@ fn fetcher() -> &'static std::sync::mpsc::SyncSender<FetchJob> {
         std::thread::Builder::new()
             .name("lcode-fetcher".to_string())
             .spawn(move || {
-                let client = reqwest::blocking::Client::builder()
+                let client = reqwest::Client::builder()
                     .connect_timeout(Duration::from_secs(30))
                     .build()
                     .expect("fetch client builds");
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("fetcher runtime builds");
                 for (url, timeout_secs, max_bytes, reply) in rx.iter() {
-                    let result = fetch_on_thread(&client, &url, timeout_secs, max_bytes);
+                    let result =
+                        runtime.block_on(fetch_on_thread(&client, &url, timeout_secs, max_bytes));
                     let _ = reply.send(result);
                 }
             })
@@ -69,13 +75,13 @@ fn fetcher() -> &'static std::sync::mpsc::SyncSender<FetchJob> {
 }
 
 /// The actual download, running on the fetcher thread (sync context).
-fn fetch_on_thread(
-    client: &reqwest::blocking::Client,
+async fn fetch_on_thread(
+    client: &reqwest::Client,
     url: &str,
     timeout_secs: u64,
     max_bytes: usize,
 ) -> anyhow::Result<(Vec<u8>, Option<String>)> {
-    let mut response = client.get(url).timeout(Duration::from_secs(timeout_secs)).send()?;
+    let mut response = client.get(url).timeout(Duration::from_secs(timeout_secs)).send().await?;
     if !response.status().is_success() {
         anyhow::bail!("fetch failed with HTTP status {}", response.status());
     }
@@ -93,14 +99,11 @@ fn fetch_on_thread(
         }
     }
     let mut bytes = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
-    let mut chunk = [0u8; 64 * 1024];
-    use std::io::Read;
     loop {
-        let n = response.read(&mut chunk)?;
-        if n == 0 {
+        let Some(chunk) = response.chunk().await? else {
             break;
-        }
-        bytes.extend_from_slice(&chunk[..n]);
+        };
+        bytes.extend_from_slice(&chunk);
         if bytes.len() > max_bytes {
             anyhow::bail!("fetch exceeds tools.max_fetch_bytes ({} bytes limit)", max_bytes);
         }

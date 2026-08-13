@@ -110,6 +110,7 @@ fn utf8_text_with_high_bytes_is_not_binary() {
 // --- scrub latency bound (protocol P5) ---
 
 #[test]
+#[serial_test::serial]
 fn scrub_10mb_text_under_200ms() {
     let chunk = "line with some words and a token=abc123 value\n".repeat(20_000);
     let big = chunk.repeat(12); // ~11MB
