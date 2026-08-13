@@ -85,6 +85,12 @@ pub struct LlmConfig {
     /// by the retry layer after `max_attempts` consecutive failures)
     #[serde(default)]
     pub fallback_model: Option<String>,
+
+    /// Disable the provider's thinking mode (DeepSeek v4 defaults to
+    /// enabled): skips the hidden reasoning tokens, lowering prompt
+    /// tokens (~79 fewer) and making responses faster and more direct.
+    #[serde(default)]
+    pub thinking_disabled: bool,
 }
 
 impl Default for LlmConfig {
@@ -97,6 +103,7 @@ impl Default for LlmConfig {
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             fallback_model: None,
+            thinking_disabled: false,
         }
     }
 }

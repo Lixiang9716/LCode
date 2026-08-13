@@ -23,6 +23,8 @@ pub struct OpenAiProvider {
     max_tokens: AtomicU32,
     temperature: f32,
     client: reqwest::Client,
+    /// Disable the provider's thinking mode when configured.
+    thinking_disabled: bool,
 }
 
 impl OpenAiProvider {
@@ -44,6 +46,7 @@ impl OpenAiProvider {
             max_tokens: AtomicU32::new(config.max_tokens),
             temperature: config.temperature,
             client: reqwest::Client::new(),
+            thinking_disabled: config.thinking_disabled,
         })
     }
 }
@@ -63,6 +66,7 @@ impl LlmProvider for OpenAiProvider {
             messages,
             tools,
             false,
+            self.thinking_disabled,
         );
         let response = self
             .client
@@ -100,6 +104,7 @@ impl LlmProvider for OpenAiProvider {
             messages,
             tools,
             true,
+            self.thinking_disabled,
         );
         let response = self
             .client
@@ -163,6 +168,7 @@ fn build_body(
     messages: &[ChatMessage],
     tools: &[ToolDefinition],
     stream: bool,
+    thinking_disabled: bool,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "model": model,
@@ -171,6 +177,9 @@ fn build_body(
         "temperature": temperature,
         "stream": stream,
     });
+    if thinking_disabled {
+        body["thinking"] = serde_json::json!({ "type": "disabled" });
+    }
 
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools).unwrap();

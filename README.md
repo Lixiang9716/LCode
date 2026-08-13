@@ -170,6 +170,8 @@ model = "deepseek-chat"
 max_tokens = 8192
 temperature = 0.3
 fallback_model = ""            # optional failover model
+thinking_disabled = false      # true: skip DeepSeek v4's hidden reasoning
+                               # tokens (~79 fewer prompt tokens, faster)
 
 [agent]
 system_prompt = "You are LCode, an expert software engineer..."

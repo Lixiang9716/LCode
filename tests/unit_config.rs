@@ -429,3 +429,18 @@ todo_nag_after_turns = 1
     std::env::remove_var("LCODE_TODO_MAX_ITEMS");
     std::env::remove_var("LCODE_COMPACTION_AUTO_THRESHOLD");
 }
+
+/// `thinking_disabled` parses from TOML and the env override key.
+#[test]
+#[serial]
+fn test_thinking_disabled_config() {
+    let cfg: Config = toml::from_str("[llm]\nthinking_disabled = true\n").unwrap();
+    assert!(cfg.llm.thinking_disabled);
+
+    let mut cfg = Config::default();
+    assert!(!cfg.llm.thinking_disabled, "default keeps the provider default");
+    std::env::set_var("LCODE_LLM_THINKING_DISABLED", "true");
+    apply_env_overrides(&mut cfg);
+    assert!(cfg.llm.thinking_disabled);
+    std::env::remove_var("LCODE_LLM_THINKING_DISABLED");
+}

@@ -155,6 +155,9 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     set_usize_env("LCODE_EVENTS_CHANNEL_CAPACITY", &mut cfg.events.channel_capacity);
     set_usize_env("LCODE_EVENTS_COMMAND_CAPACITY", &mut cfg.events.command_capacity);
     set_usize_env("LCODE_TODO_MAX_ITEMS", &mut cfg.todo.max_items);
+    if let Ok(val) = std::env::var("LCODE_LLM_THINKING_DISABLED") {
+        cfg.llm.thinking_disabled = val == "1" || val.eq_ignore_ascii_case("true");
+    }
 }
 
 /// Set a `u32` field from a `LCODE_*` env var when it parses.
