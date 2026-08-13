@@ -295,6 +295,22 @@ x
     );
 }
 
+#[test]
+fn test_shell_timeout_kills_hung_command() {
+    let dir = TempDir::new().unwrap();
+    let tool = ShellTool::new_with_root(dir.path().to_path_buf());
+
+    let start = std::time::Instant::now();
+    let result = tool.execute(&serde_json::json!({ "command": "sleep 30", "timeout": 1 })).unwrap();
+    assert!(!result.success, "hung command must fail: {}", result.output);
+    assert!(result.output.contains("timed out"), "{}", result.output);
+    assert!(
+        start.elapsed().as_secs() < 10,
+        "killed within the timeout, took {:?}",
+        start.elapsed()
+    );
+}
+
 // --- search.rs: GrepTool / GlobTool ---
 
 /// Create a tempdir with a few files: two Rust files containing "needle"

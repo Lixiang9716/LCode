@@ -136,6 +136,24 @@ fn env_secret_tool_kinds_are_sidecar_only() {
 }
 
 #[test]
+fn sidecar_name_mismatch_is_reported() {
+    let dir = tempfile::TempDir::new().unwrap();
+    setup(dir.path());
+    write_sidecar(
+        dir.path(),
+        "rust-docs",
+        serde_json::json!({
+            "name": "other-name", "kind": "url",
+            "url": { "value": "https://doc.rust-lang.org" }
+        }),
+    );
+
+    let report = run(dir.path());
+    assert!(!report.ok());
+    assert!(report.render().contains("does not match the file name"), "{}", report.render());
+}
+
+#[test]
 fn cli_parses_assets_check() {
     use clap::Parser;
     let cli = lcode::cli::Cli::try_parse_from(["lcode", "assets", "check"]);

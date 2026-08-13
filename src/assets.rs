@@ -167,6 +167,14 @@ fn check_sidecar(path: &Path, name: &str, report: &mut AssetCheckReport) -> anyh
         });
         return Ok(());
     };
+    if let Some(declared) = obj.get("name").and_then(|v| v.as_str()) {
+        if declared != name {
+            report.issues.push(Issue {
+                name: name.to_string(),
+                detail: format!("sidecar name '{declared}' does not match the file name '{name}'"),
+            });
+        }
+    }
     let kind = obj.get("kind").and_then(|v| v.as_str()).unwrap_or("");
     if !KINDS.contains(&kind) {
         report.issues.push(Issue {

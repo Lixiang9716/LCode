@@ -132,25 +132,39 @@ impl Tool for ShellTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
 
-        let _timeout_secs = args["timeout"].as_u64().unwrap_or(self.timeout_secs).min(300);
+        let timeout_secs = args["timeout"].as_u64().unwrap_or(self.timeout_secs).min(300);
 
         // Safety check
         self.check_safety(command_str)?;
 
-        let output = Command::new("sh")
+        // Spawn with piped output drained on reader threads, poll for
+        // completion, and kill on the deadline — `wait_with_output`
+        // would block forever on a hung command (e.g. `find /` on a
+        // slow mount), which this timeout actually enforces.
+        let mut child = Command::new("sh")
             .arg("-c")
             .arg(command_str)
             .current_dir(&self.workspace_root)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?
-            .wait_with_output()
-            .map_err(|e| anyhow::anyhow!("Failed to wait on command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to spawn command: {}", e))?;
+        let stdout_reader = child.stdout.take().map(drain_in_thread);
+        let stderr_reader = child.stderr.take().map(drain_in_thread);
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let status = match wait_with_timeout(&mut child, timeout_secs) {
+            Ok(status) => status,
+            Err(()) => {
+                return Ok(ToolResult::err(format!(
+                    "Command timed out after {}s (max 300)",
+                    timeout_secs
+                )));
+            }
+        };
+
+        let stdout = read_drained(stdout_reader);
+        let stderr = read_drained(stderr_reader);
+        let exit_code = status.code().unwrap_or(-1);
 
         let mut result_output = String::new();
 
@@ -175,13 +189,59 @@ impl Tool for ShellTool {
     }
 }
 
-/// Truncate long output with a note about truncation.
+/// Drain a piped-output reader thread (best effort).
+fn read_drained(reader: Option<std::thread::JoinHandle<String>>) -> String {
+    reader.map(|h| h.join().unwrap_or_default()).unwrap_or_default()
+}
+
+/// A reader thread pulling a child's piped output to EOF (prevents the
+/// pipe buffer from deadlocking the child on large output).
+fn drain_in_thread<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = pipe.read_to_string(&mut buf);
+        buf
+    })
+}
+
+/// Poll a child until exit or the deadline; kills the child on timeout
+/// and returns `Err(())` so the caller can report it.
+fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout_secs: u64,
+) -> std::result::Result<std::process::ExitStatus, ()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+        }
+    }
+}
+
+/// Truncate long output with a note about truncation. Walks back to a
+/// char boundary: slicing at `max_len` would panic mid-character.
 fn truncate_output(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
-
-    let boundary = s[..max_len].char_indices().last().map(|(i, _)| i).unwrap_or(max_len);
-
-    format!("{}\n... (truncated, total {} bytes)\n", &s[..boundary], s.len())
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... (truncated, total {} bytes)\n", &s[..end], s.len())
 }

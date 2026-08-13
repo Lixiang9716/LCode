@@ -54,8 +54,9 @@ Every sidecar is JSON with a tagged `kind` and kind-specific fields:
 2. **Fetch a remote asset** — `write_file` with `path: "assets/<name>"`
    and `url: "https://..."` (gated by `tools.enable_web`, size cap
    `tools.max_fetch_bytes`, approval `tools.network_requires_approval`).
-3. **Check a URL** — `bash: curl -sI -o /dev/null -w '%{http_code}' --max-time 15 <url>`
-   → update `last_status` / `checked_at` in the sidecar.
+3. **Check a URL** — `bash: curl -sIL -o /dev/null -w '%{http_code}' --max-time 15 <url>`
+   (`-L` follows redirects; any 2xx/3xx counts as reachable) → update
+   `last_status` / `checked_at` in the sidecar.
 4. **Check an env var** — `bash: test -n "${VAR+x}" && echo set || echo unset`
    (never print the value; use `echo ${#VAR}` for length at most).
 5. **Check a secret** — same presence check at its location; **never echo
@@ -67,6 +68,7 @@ Every sidecar is JSON with a tagged `kind` and kind-specific fields:
 8. **Check quota/balance** — `bash: curl -s -H "Authorization: Bearer <key from config>" https://api.deepseek.com/user/balance`
    → **mask the key in the command echo**, record `balance_usd` only.
 9. **Verify integrity** — `bash: sha256sum -c <(echo "<hex>  assets/<name>")`
+   (if `lcode` is not on PATH, use the absolute path of the binary)
    or recompute and compare with the sidecar; update the sidecar when the
    file legitimately changed. When done with a batch of changes, run the
    enforcement pass: `bash: lcode assets check` — it validates every
