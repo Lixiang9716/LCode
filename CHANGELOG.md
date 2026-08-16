@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/Lixiang9716/LCode/compare/v0.11.0...v0.12.0) (2026-08-16)
+
+
+### Features
+
+* **agent:** workspace-aware context injection (opt-in) ([9f883ed](https://github.com/Lixiang9716/LCode/commit/9f883ed096526f63449e4882497259dfc542619e))
+* **agent:** workspace-aware context injection (opt-in) ([a394cf5](https://github.com/Lixiang9716/LCode/commit/a394cf54e54242e0ef6b20288ec0e919312eb7cc))
+
+
+### Bug Fixes
+
+* **agent:** publish WorkspaceContext event for the audit trail ([a288ea6](https://github.com/Lixiang9716/LCode/commit/a288ea671db6a4ab0ed12afa6db1a80b45883739))
+
 ## [0.11.0](https://github.com/Lixiang9716/LCode/compare/v0.10.0...v0.11.0) (2026-08-13)
 
 
