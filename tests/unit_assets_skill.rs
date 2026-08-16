@@ -45,9 +45,13 @@ fn registry_discovers_the_builtin_skill() {
     // Layer 1: the one-line description is injected into the prompt.
     let descriptions = registry.descriptions();
     assert!(descriptions.contains("- assets:"), "{descriptions}");
+    assert!(descriptions.contains("- e2e-battery:"), "{descriptions}");
 
     // Layer 2: load_skill pulls the full body.
     let content = registry.content("assets");
     assert!(content.contains("<skill name=\"assets\">"), "{content}");
     assert!(content.contains("sha256sum"), "full body loads: {content}");
+
+    let e2e = registry.content("e2e-battery");
+    assert!(e2e.contains("Multi-agent E2E"), "playbook loads: {e2e}");
 }
