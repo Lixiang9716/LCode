@@ -14,17 +14,7 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         }
         Command::Run { task, max_turns, auto_approve, stream, resume } => {
             if resume {
-                let store = crate::agent::CheckpointStore::new(&crate::agent::workspace_root()?);
-                let Some(checkpoint) = store.load() else {
-                    anyhow::bail!("no checkpoint to resume (the last run either finished or checkpointing is disabled)");
-                };
-                tracing::info!(turns = checkpoint.turns_used, "Resuming from checkpoint");
-                let outcome =
-                    crate::agent::run_task_resume(checkpoint, auto_approve, stream, &cfg).await?;
-                if !outcome.completed {
-                    std::process::exit(2);
-                }
-                return Ok(());
+                return handle_resume(auto_approve, stream, &cfg).await;
             }
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
@@ -75,6 +65,22 @@ fn handle_assets(action: crate::cli::AssetsAction) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// `lcode run --resume`: continue the latest checkpoint (P1).
+async fn handle_resume(auto_approve: bool, stream: bool, cfg: &Config) -> anyhow::Result<()> {
+    let store = crate::agent::CheckpointStore::new(&crate::agent::workspace_root()?);
+    let Some(checkpoint) = store.load() else {
+        anyhow::bail!(
+            "no checkpoint to resume (the last run either finished or checkpointing is disabled)"
+        );
+    };
+    tracing::info!(turns = checkpoint.turns_used, "Resuming from checkpoint");
+    let outcome = crate::agent::run_task_resume(checkpoint, auto_approve, stream, cfg).await?;
+    if !outcome.completed {
+        std::process::exit(2);
+    }
+    Ok(())
 }
 
 /// Handle the `lcode session` subcommands (save / list / resume).

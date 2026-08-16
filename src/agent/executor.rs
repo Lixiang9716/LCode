@@ -334,23 +334,7 @@ impl Executor {
         }
         // Return only the freshly accumulated usage: the caller already
         // carries the seeded total (checkpoint resume).
-        let fresh = crate::llm::Usage {
-            prompt_tokens: total_usage.prompt_tokens.saturating_sub(initial_usage.prompt_tokens),
-            completion_tokens: total_usage
-                .completion_tokens
-                .saturating_sub(initial_usage.completion_tokens),
-            total_tokens: total_usage.total_tokens.saturating_sub(initial_usage.total_tokens),
-            cache_hit_tokens: total_usage
-                .cache_hit_tokens
-                .saturating_sub(initial_usage.cache_hit_tokens),
-            cache_miss_tokens: total_usage
-                .cache_miss_tokens
-                .saturating_sub(initial_usage.cache_miss_tokens),
-            reasoning_tokens: total_usage
-                .reasoning_tokens
-                .saturating_sub(initial_usage.reasoning_tokens),
-        };
-        Ok((aborted, turn, fresh))
+        Ok((aborted, turn, fresh_usage(&total_usage, initial_usage)))
     }
 
     /// Handle a single tool call: request approval via the event bus,
@@ -463,6 +447,19 @@ impl Executor {
 fn abort_session(runtime: &AgentRuntime, aborted: &mut bool) {
     runtime.publish(AgentEvent::TaskAborted { reason: "Aborted by user".to_string() });
     *aborted = true;
+}
+
+/// Field-wise `total - initial` (checkpoint resume: the caller carries
+/// the seeded total, so a loop returns only what it added).
+fn fresh_usage(total: &crate::llm::Usage, initial: &crate::llm::Usage) -> crate::llm::Usage {
+    crate::llm::Usage {
+        prompt_tokens: total.prompt_tokens.saturating_sub(initial.prompt_tokens),
+        completion_tokens: total.completion_tokens.saturating_sub(initial.completion_tokens),
+        total_tokens: total.total_tokens.saturating_sub(initial.total_tokens),
+        cache_hit_tokens: total.cache_hit_tokens.saturating_sub(initial.cache_hit_tokens),
+        cache_miss_tokens: total.cache_miss_tokens.saturating_sub(initial.cache_miss_tokens),
+        reasoning_tokens: total.reasoning_tokens.saturating_sub(initial.reasoning_tokens),
+    }
 }
 
 /// Does this tool invocation require approval? Always when

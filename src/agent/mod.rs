@@ -53,6 +53,7 @@ mod quality;
 mod recorder;
 mod render;
 mod retry;
+mod run_entry;
 mod runtime;
 mod session;
 mod skill;
@@ -83,6 +84,7 @@ pub use hooks::{
     deny_tool, register_default_hooks, HookContext, HookDecision, HookPoint, HookRegistry,
 };
 pub use mcp::{ConnectMcpTool, McpRegistry, McpServer};
+pub use run_entry::run_task_resume;
 // MCP stdio helpers (G13), exported for integration tests.
 pub use mcp_stdio::{parse_frame, split_command};
 pub use memory::{exact_tokens, ConversationMemory};
@@ -152,41 +154,6 @@ pub async fn run_task(
     config: &Config,
 ) -> anyhow::Result<TaskOutcome> {
     run_task_with_memory(task, max_turns, auto_approve, stream, config, None, None).await
-}
-
-/// Resume an interrupted session from a checkpoint (P1): the
-/// conversation, turn counter, usage total and budget-warning state
-/// continue exactly where the run stopped.
-pub async fn run_task_resume(
-    checkpoint: Checkpoint,
-    auto_approve: bool,
-    stream: bool,
-    config: &Config,
-) -> anyhow::Result<TaskOutcome> {
-    let store = CheckpointStore::new(&std::env::current_dir()?);
-    if !store.matches_workspace(&checkpoint) {
-        anyhow::bail!(
-            "checkpoint belongs to a different workspace ({}); refusing to resume",
-            checkpoint.workspace
-        );
-    }
-    let memory =
-        ConversationMemory::from_messages(config.agent.system_prompt.clone(), checkpoint.messages);
-    let state = RunState {
-        turns_used: checkpoint.turns_used,
-        usage: checkpoint.usage,
-        budget_warned: checkpoint.budget_warned,
-    };
-    run_task_with_memory(
-        &checkpoint.task,
-        config.agent.max_turns,
-        auto_approve,
-        stream,
-        config,
-        Some(memory),
-        Some(state),
-    )
-    .await
 }
 
 /// Build a full agent session: provider, registry with all session
@@ -422,16 +389,7 @@ async fn execute_session(
     }
     // P1 checkpoint: attach the periodic writer when enabled; a
     // completed session clears the checkpoint (nothing left to resume).
-    let checkpoint_store =
-        (config.agent.checkpoint_every_turns > 0).then(|| CheckpointStore::new(&workspace));
-    if let Some(store) = &checkpoint_store {
-        executor.set_checkpoint_sink(CheckpointSink::new(
-            store.clone(),
-            task,
-            &workspace,
-            config.agent.checkpoint_every_turns,
-        ));
-    }
+    let checkpoint_store = attach_checkpoint(&mut executor, config, task, &workspace);
     executor.run(task, &planner, memory, max_turns, stream).await?;
     if !executor.aborted {
         if let Some(store) = &checkpoint_store {
@@ -445,9 +403,9 @@ async fn execute_session(
     let outcome = TaskOutcome { completed: !executor.aborted, turns: executor.last_turn };
     // Session-level usage summary: token/cache counts and cost.
     if !executor.aborted {
-        publish_usage_summary(&executor, config);
+        crate::agent::run_entry::publish_usage_summary(&executor, config);
     }
-    print_budget_status(config, &executor.last_usage);
+    crate::agent::run_entry::print_budget_status(config, &executor.last_usage);
     drop(executor);
 
     // Teammate loops hold the team event bus; without a shutdown signal
@@ -463,34 +421,25 @@ async fn execute_session(
     Ok(outcome)
 }
 
-/// Publish the session-level UsageSummary event (lead agent).
-fn publish_usage_summary(executor: &crate::agent::Executor, config: &Config) {
-    let usage = executor.last_usage.clone();
-    executor.runtime.publish(crate::agent::AgentEvent::UsageSummary {
-        agent: "lead".to_string(),
-        model: config.llm.model.clone(),
-        prompt_tokens: usage.prompt_tokens,
-        completion_tokens: usage.completion_tokens,
-        cache_hit_tokens: usage.cache_hit_tokens,
-        cache_miss_tokens: usage.cache_miss_tokens,
-        reasoning_tokens: usage.reasoning_tokens,
-        cost_usd: crate::llm::estimate_cost(&config.llm.model, &usage),
-    });
-}
-
-/// P0 budget status line: spent vs cap when a cap is configured.
-fn print_budget_status(config: &Config, usage: &crate::llm::Usage) {
-    let Some(budget) = config.llm.budget_total_usd else {
-        return;
-    };
-    let spent = crate::llm::estimate_cost(&config.llm.model, usage);
-    let remaining = (budget - spent).max(0.0);
-    println!(
-        "💰 Budget: {} / {} spent ({} remaining)",
-        crate::llm::format_cost(spent),
-        crate::llm::format_cost(budget),
-        crate::llm::format_cost(remaining)
-    );
+/// Attach the checkpoint sink when enabled; returns the store so the
+/// caller can clear it on completion.
+fn attach_checkpoint(
+    executor: &mut crate::agent::Executor,
+    config: &Config,
+    task: &str,
+    workspace: &std::path::Path,
+) -> Option<CheckpointStore> {
+    if config.agent.checkpoint_every_turns == 0 {
+        return None;
+    }
+    let store = CheckpointStore::new(workspace);
+    executor.set_checkpoint_sink(CheckpointSink::new(
+        store.clone(),
+        task,
+        workspace,
+        config.agent.checkpoint_every_turns,
+    ));
+    Some(store)
 }
 
 /// Print one usage line per teammate from `.team/usage.jsonl` (best

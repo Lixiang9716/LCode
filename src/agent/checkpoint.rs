@@ -50,7 +50,7 @@ impl CheckpointSink {
 
     /// Is a checkpoint due for this turn count?
     pub fn due(&self, turns_used: u32) -> bool {
-        self.every > 0 && turns_used > 0 && turns_used % self.every == 0
+        self.every > 0 && turns_used > 0 && turns_used.is_multiple_of(self.every)
     }
 
     pub fn write(
