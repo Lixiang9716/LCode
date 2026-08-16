@@ -185,6 +185,9 @@ impl Executor {
         self.aborted = aborted;
         self.aborted = aborted;
         self.last_turn = total_turns;
+        // Set on both paths so the budget status line is honest even
+        // for aborted sessions (checkpoint resume budget continuity).
+        self.last_usage = total_usage;
 
         if !aborted {
             // G8: Stop hook (policy/observation at session end)
@@ -199,7 +202,6 @@ impl Executor {
             // G3 (s09): at session end, extract durable memories from the
             // conversation and consolidate the memory store. Their usage
             // accumulates into the session total (`last_usage`).
-            self.last_usage = total_usage;
             self.persist_memories(&memory).await;
 
             self.runtime.publish(AgentEvent::TaskFinished {
