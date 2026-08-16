@@ -63,7 +63,7 @@ cargo build --release -q
 t1=$(date +%s%N)
 p1_ms=$(( (t1 - t0) / 1000000 ))
 record "perf" "cold_build_ms" "$p1_ms"
-p1_ok=0; [ "$p1_ms" -le 90000 ] || p1_ok=1   # baseline 56.9s; tripwire 90s
+p1_ok=0; [ "$p1_ms" -le 180000 ] || p1_ok=1  # local ~58s, shared CI ~109s; tripwire 180s
 verdict "$p1_ok" "perf.cold_build" "$((p1_ms / 1000)).$((p1_ms % 1000 / 100))s"
 
 # --- P2: binary size --------------------------------------------------
@@ -87,7 +87,8 @@ verdict "$p3_ok" "perf.startup" "${p3_ms}ms"
 
 # --- P4: test suite ---------------------------------------------------
 t0=$(date +%s%N)
-if cargo nextest run > "$OUT/nextest.log" 2>&1; then
+if NO_COLOR=1 cargo nextest run > "$OUT/nextest.log" 2>&1; then
+  sed -i 's/\x1b\[[0-9;]*m//g' "$OUT/nextest.log"
   p4_passed=$(grep -oE "[0-9]+ passed" "$OUT/nextest.log" | tail -1 | grep -oE "[0-9]+" || echo 0)
 else
   p4_passed=0
