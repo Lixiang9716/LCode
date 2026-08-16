@@ -84,7 +84,7 @@ fn render_usage_summary(
 /// Render the budget-exceeded banner.
 fn render_budget_exceeded(spent_usd: f64, budget_usd: f64) {
     println!(
-        "\n💸 Budget exceeded: ${} of ${} spent — aborting",
+        "\n💸 Budget exceeded: {} of {} spent — aborting",
         crate::llm::format_cost(spent_usd),
         crate::llm::format_cost(budget_usd)
     );

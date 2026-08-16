@@ -212,7 +212,7 @@ pub(crate) fn check_budget(
         executor.runtime.publish(AgentEvent::BudgetExceeded { spent_usd: spent, budget_usd: cap });
         executor.runtime.publish(AgentEvent::TaskAborted {
             reason: format!(
-                "Cost budget exceeded (${} of ${})",
+                "Cost budget exceeded ({} of {})",
                 crate::llm::format_cost(spent),
                 crate::llm::format_cost(cap)
             ),
@@ -222,7 +222,7 @@ pub(crate) fn check_budget(
     if !*budget_warned && spent >= cap * tuning.budget_warning_ratio {
         *budget_warned = true;
         memory.add_user(format!(
-            "<reminder>Budget warning: ~{:.0}% of the ${} session budget is spent. \
+            "<reminder>Budget warning: ~{:.0}% of the {} session budget is spent. \
              Finish the task with minimal further work.</reminder>",
             tuning.budget_warning_ratio * 100.0,
             crate::llm::format_cost(cap)

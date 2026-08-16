@@ -88,6 +88,12 @@ pub struct Executor {
     /// A test command failed in the previous turn (test-until-green
     /// reminder pending).
     pub(crate) test_failed: bool,
+    /// Budget-warning state (P0 gate), carried across resumed runs.
+    pub(crate) budget_warned: bool,
+    /// Turn/cost state to continue from on a resumed run (P1).
+    pub(crate) seeded: Option<crate::agent::checkpoint::RunState>,
+    /// Periodic checkpoint writer (P1), `None` when disabled.
+    pub(crate) checkpoint_sink: Option<crate::agent::checkpoint::CheckpointSink>,
     /// Whether the session ended via abort (e.g. max turns) instead
     /// of finishing normally; surfaced to the CLI for the exit code.
     pub(crate) aborted: bool,
@@ -125,10 +131,26 @@ impl Executor {
             internal_provider: session.internal_provider,
             web_search: session.web_search,
             test_failed: false,
+            budget_warned: false,
+            seeded: None,
+            checkpoint_sink: None,
             aborted: false,
             last_turn: 0,
             last_usage: crate::llm::Usage::default(),
         }
+    }
+
+    /// Seed the turn/cost state for a resumed run (P1 checkpoint).
+    #[doc(hidden)]
+    pub fn seed(&mut self, state: crate::agent::checkpoint::RunState) {
+        self.budget_warned = state.budget_warned;
+        self.seeded = Some(state);
+    }
+
+    /// Attach the periodic checkpoint writer (P1).
+    #[doc(hidden)]
+    pub fn set_checkpoint_sink(&mut self, sink: crate::agent::checkpoint::CheckpointSink) {
+        self.checkpoint_sink = Some(sink);
     }
 
     /// Run the agent loop for a given task.
@@ -163,6 +185,9 @@ impl Executor {
         self.aborted = aborted;
         self.aborted = aborted;
         self.last_turn = total_turns;
+        // Set on both paths so the budget status line is honest even
+        // for aborted sessions (checkpoint resume budget continuity).
+        self.last_usage = total_usage;
 
         if !aborted {
             // G8: Stop hook (policy/observation at session end)
@@ -177,7 +202,6 @@ impl Executor {
             // G3 (s09): at session end, extract durable memories from the
             // conversation and consolidate the memory store. Their usage
             // accumulates into the session total (`last_usage`).
-            self.last_usage = total_usage;
             self.persist_memories(&memory).await;
 
             self.runtime.publish(AgentEvent::TaskFinished {
@@ -248,11 +272,12 @@ impl Executor {
         memory: &mut ConversationMemory,
         max_turns: u32,
         stream: bool,
+        initial_usage: &crate::llm::Usage,
     ) -> anyhow::Result<(bool, u32, crate::llm::Usage)> {
         let mut turn = 0u32;
         let mut aborted = false;
-        let mut total_usage = crate::llm::Usage::default();
-        let mut budget_warned = false;
+        // Seeded usage (checkpoint resume) counts toward the budget gate.
+        let mut total_usage = initial_usage.clone();
         loop {
             if turn >= max_turns {
                 self.runtime.publish(AgentEvent::TaskAborted {
@@ -285,7 +310,10 @@ impl Executor {
             crate::agent::executor_hooks::accumulate_usage(&mut total_usage, &response.usage);
 
             // Budget gate (P0): warn at the ratio, abort at the cap.
-            if check_budget(self, &mut budget_warned, &total_usage, memory) {
+            let mut warned = self.budget_warned;
+            let over_budget = check_budget(self, &mut warned, &total_usage, memory);
+            self.budget_warned = warned;
+            if over_budget {
                 aborted = true;
                 break;
             }
@@ -306,7 +334,9 @@ impl Executor {
                 break;
             }
         }
-        Ok((aborted, turn, total_usage))
+        // Return only the freshly accumulated usage: the caller already
+        // carries the seeded total (checkpoint resume).
+        Ok((aborted, turn, fresh_usage(&total_usage, initial_usage)))
     }
 
     /// Handle a single tool call: request approval via the event bus,
@@ -419,6 +449,19 @@ impl Executor {
 fn abort_session(runtime: &AgentRuntime, aborted: &mut bool) {
     runtime.publish(AgentEvent::TaskAborted { reason: "Aborted by user".to_string() });
     *aborted = true;
+}
+
+/// Field-wise `total - initial` (checkpoint resume: the caller carries
+/// the seeded total, so a loop returns only what it added).
+fn fresh_usage(total: &crate::llm::Usage, initial: &crate::llm::Usage) -> crate::llm::Usage {
+    crate::llm::Usage {
+        prompt_tokens: total.prompt_tokens.saturating_sub(initial.prompt_tokens),
+        completion_tokens: total.completion_tokens.saturating_sub(initial.completion_tokens),
+        total_tokens: total.total_tokens.saturating_sub(initial.total_tokens),
+        cache_hit_tokens: total.cache_hit_tokens.saturating_sub(initial.cache_hit_tokens),
+        cache_miss_tokens: total.cache_miss_tokens.saturating_sub(initial.cache_miss_tokens),
+        reasoning_tokens: total.reasoning_tokens.saturating_sub(initial.reasoning_tokens),
+    }
 }
 
 /// Does this tool invocation require approval? Always when

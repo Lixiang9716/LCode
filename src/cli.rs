@@ -53,6 +53,10 @@ pub enum Command {
         /// Stream token deltas as they are generated (typewriter effect)
         #[arg(long)]
         stream: bool,
+
+        /// Resume the latest checkpoint instead of starting a new task
+        #[arg(long)]
+        resume: bool,
     },
 
     /// Manage LCode configuration

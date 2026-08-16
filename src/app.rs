@@ -12,7 +12,10 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Repl { prompt } => {
             crate::repl::start(prompt, cfg).await?;
         }
-        Command::Run { task, max_turns, auto_approve, stream } => {
+        Command::Run { task, max_turns, auto_approve, stream, resume } => {
+            if resume {
+                return handle_resume(max_turns, auto_approve, stream, &cfg).await;
+            }
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
                 anyhow::bail!("Task description cannot be empty. Usage: lcode run \"<task>\"");
@@ -64,6 +67,29 @@ fn handle_assets(action: crate::cli::AssetsAction) -> anyhow::Result<()> {
     }
 }
 
+/// `lcode run --resume`: continue the latest checkpoint (P1). The
+/// CLI's --max-turns applies to the resumed run (CLI > config file).
+async fn handle_resume(
+    max_turns: u32,
+    auto_approve: bool,
+    stream: bool,
+    cfg: &Config,
+) -> anyhow::Result<()> {
+    let store = crate::agent::CheckpointStore::new(&crate::agent::workspace_root()?);
+    let Some(checkpoint) = store.load() else {
+        anyhow::bail!(
+            "no checkpoint to resume (the last run either finished or checkpointing is disabled)"
+        );
+    };
+    tracing::info!(turns = checkpoint.turns_used, "Resuming from checkpoint");
+    let outcome =
+        crate::agent::run_task_resume(checkpoint, max_turns, auto_approve, stream, cfg).await?;
+    if !outcome.completed {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
 /// Handle the `lcode session` subcommands (save / list / resume).
 async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()> {
     let store = SessionStore::new(&crate::agent::workspace_root()?);
@@ -106,6 +132,7 @@ async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()
                 false,
                 &cfg,
                 Some(memory),
+                None,
             )
             .await?;
             if !outcome.completed {

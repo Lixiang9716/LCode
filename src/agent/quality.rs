@@ -113,9 +113,10 @@ impl Executor {
         max_turns: u32,
         stream: bool,
     ) -> anyhow::Result<(bool, u32, crate::llm::Usage)> {
-        let mut total_turns = 0u32;
+        let seeded = self.seeded.take();
+        let mut total_turns = seeded.as_ref().map(|s| s.turns_used).unwrap_or(0);
         let mut review_rounds = 0u32;
-        let mut total_usage = crate::llm::Usage::default();
+        let mut total_usage = seeded.as_ref().map(|s| s.usage.clone()).unwrap_or_default();
         let mut aborted = false;
         loop {
             let remaining = max_turns.saturating_sub(total_turns);
@@ -126,9 +127,18 @@ impl Executor {
                 aborted = true;
                 break;
             }
-            let (loop_aborted, turn, usage) = self.run_loop(memory, remaining, stream).await?;
+            let initial_usage = total_usage.clone();
+            let (loop_aborted, turn, usage) =
+                self.run_loop(memory, remaining, stream, &initial_usage).await?;
             total_turns += turn;
             crate::agent::usage_tracking::accumulate_usage(&mut total_usage, &usage);
+            if let Some(sink) = &self.checkpoint_sink {
+                // Checkpoint on the cadence and on every abort — the
+                // abort state is exactly what a resume must continue from.
+                if sink.due(total_turns) || loop_aborted {
+                    sink.write(memory, total_turns, &total_usage, self.budget_warned);
+                }
+            }
             if loop_aborted {
                 aborted = true;
                 break;

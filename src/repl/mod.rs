@@ -210,6 +210,7 @@ async fn resume_session(args: &str, config: &Config) -> anyhow::Result<()> {
                 false,
                 config,
                 Some(memory),
+                None,
             )
             .await
             {
