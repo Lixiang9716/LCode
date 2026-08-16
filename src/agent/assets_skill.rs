@@ -8,19 +8,27 @@
 
 /// The default assets skill document.
 pub const ASSETS_SKILL: &str = include_str!("../../skills/assets/SKILL.md");
+/// The multi-agent E2E testing playbook.
+pub const E2E_SKILL: &str = include_str!("../../skills/e2e-battery/SKILL.md");
 
-/// Ensure the built-in assets skill exists under `skills_dir`; writes
-/// it only when missing so user edits survive. Failures are non-fatal
-/// (a read-only workspace simply has no assets skill).
+/// Every built-in skill shipped in the binary: (directory, content).
+pub const BUILTIN_SKILLS: [(&str, &str); 2] =
+    [("assets", ASSETS_SKILL), ("e2e-battery", E2E_SKILL)];
+
+/// Ensure the built-in skills exist under `skills_dir`; each is written
+/// only when missing so user edits survive. Failures are non-fatal (a
+/// read-only workspace simply has no built-in skills).
 pub fn ensure_assets_skill(skills_dir: &std::path::Path) {
-    let target = skills_dir.join("assets").join("SKILL.md");
-    if target.exists() {
-        return;
-    }
-    if let Some(parent) = target.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(&target, ASSETS_SKILL) {
-        tracing::debug!(error = %e, "could not materialize the built-in assets skill");
+    for (name, content) in BUILTIN_SKILLS {
+        let target = skills_dir.join(name).join("SKILL.md");
+        if target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&target, content) {
+            tracing::debug!(error = %e, skill = name, "could not materialize the built-in skill");
+        }
     }
 }
