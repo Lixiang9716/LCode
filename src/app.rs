@@ -14,7 +14,7 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         }
         Command::Run { task, max_turns, auto_approve, stream, resume } => {
             if resume {
-                return handle_resume(auto_approve, stream, &cfg).await;
+                return handle_resume(max_turns, auto_approve, stream, &cfg).await;
             }
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
@@ -67,8 +67,14 @@ fn handle_assets(action: crate::cli::AssetsAction) -> anyhow::Result<()> {
     }
 }
 
-/// `lcode run --resume`: continue the latest checkpoint (P1).
-async fn handle_resume(auto_approve: bool, stream: bool, cfg: &Config) -> anyhow::Result<()> {
+/// `lcode run --resume`: continue the latest checkpoint (P1). The
+/// CLI's --max-turns applies to the resumed run (CLI > config file).
+async fn handle_resume(
+    max_turns: u32,
+    auto_approve: bool,
+    stream: bool,
+    cfg: &Config,
+) -> anyhow::Result<()> {
     let store = crate::agent::CheckpointStore::new(&crate::agent::workspace_root()?);
     let Some(checkpoint) = store.load() else {
         anyhow::bail!(
@@ -76,7 +82,8 @@ async fn handle_resume(auto_approve: bool, stream: bool, cfg: &Config) -> anyhow
         );
     };
     tracing::info!(turns = checkpoint.turns_used, "Resuming from checkpoint");
-    let outcome = crate::agent::run_task_resume(checkpoint, auto_approve, stream, cfg).await?;
+    let outcome =
+        crate::agent::run_task_resume(checkpoint, max_turns, auto_approve, stream, cfg).await?;
     if !outcome.completed {
         std::process::exit(2);
     }

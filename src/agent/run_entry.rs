@@ -14,6 +14,7 @@ use crate::config::Config;
 /// continue exactly where the run stopped.
 pub async fn run_task_resume(
     checkpoint: Checkpoint,
+    max_turns: u32,
     auto_approve: bool,
     stream: bool,
     config: &Config,
@@ -32,9 +33,11 @@ pub async fn run_task_resume(
         usage: checkpoint.usage,
         budget_warned: checkpoint.budget_warned,
     };
+    // The CLI's --max-turns wins over the config file (standard
+    // precedence); the remaining budget is computed inside the loop.
     run_task_with_memory(
         &checkpoint.task,
-        config.agent.max_turns,
+        max_turns,
         auto_approve,
         stream,
         config,
