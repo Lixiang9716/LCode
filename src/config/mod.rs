@@ -116,6 +116,7 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     // Runtime tuning overrides (one env var per tunable).
     set_u32_env("LCODE_AGENT_TODO_NAG_AFTER_TURNS", &mut cfg.agent.todo_nag_after_turns);
     set_u32_env("LCODE_AGENT_SELF_REVIEW_MAX_ROUNDS", &mut cfg.agent.self_review_max_rounds);
+    set_u32_env("LCODE_AGENT_CHECKPOINT_EVERY_TURNS", &mut cfg.agent.checkpoint_every_turns);
     if let Ok(val) = std::env::var("LCODE_AGENT_TEST_UNTIL_GREEN") {
         cfg.agent.test_until_green = val == "1" || val.eq_ignore_ascii_case("true");
     }
@@ -227,6 +228,9 @@ fn merge_agent(base: &mut AgentConfig, other: AgentConfig) {
     }
     if other.workspace_aware {
         base.workspace_aware = true;
+    }
+    if other.checkpoint_every_turns != settings::default_checkpoint_every_turns() {
+        base.checkpoint_every_turns = other.checkpoint_every_turns;
     }
 }
 

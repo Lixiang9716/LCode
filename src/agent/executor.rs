@@ -88,6 +88,12 @@ pub struct Executor {
     /// A test command failed in the previous turn (test-until-green
     /// reminder pending).
     pub(crate) test_failed: bool,
+    /// Budget-warning state (P0 gate), carried across resumed runs.
+    pub(crate) budget_warned: bool,
+    /// Turn/cost state to continue from on a resumed run (P1).
+    pub(crate) seeded: Option<crate::agent::checkpoint::RunState>,
+    /// Periodic checkpoint writer (P1), `None` when disabled.
+    pub(crate) checkpoint_sink: Option<crate::agent::checkpoint::CheckpointSink>,
     /// Whether the session ended via abort (e.g. max turns) instead
     /// of finishing normally; surfaced to the CLI for the exit code.
     pub(crate) aborted: bool,
@@ -125,10 +131,26 @@ impl Executor {
             internal_provider: session.internal_provider,
             web_search: session.web_search,
             test_failed: false,
+            budget_warned: false,
+            seeded: None,
+            checkpoint_sink: None,
             aborted: false,
             last_turn: 0,
             last_usage: crate::llm::Usage::default(),
         }
+    }
+
+    /// Seed the turn/cost state for a resumed run (P1 checkpoint).
+    #[doc(hidden)]
+    pub fn seed(&mut self, state: crate::agent::checkpoint::RunState) {
+        self.budget_warned = state.budget_warned;
+        self.seeded = Some(state);
+    }
+
+    /// Attach the periodic checkpoint writer (P1).
+    #[doc(hidden)]
+    pub fn set_checkpoint_sink(&mut self, sink: crate::agent::checkpoint::CheckpointSink) {
+        self.checkpoint_sink = Some(sink);
     }
 
     /// Run the agent loop for a given task.
@@ -248,11 +270,12 @@ impl Executor {
         memory: &mut ConversationMemory,
         max_turns: u32,
         stream: bool,
+        initial_usage: &crate::llm::Usage,
     ) -> anyhow::Result<(bool, u32, crate::llm::Usage)> {
         let mut turn = 0u32;
         let mut aborted = false;
-        let mut total_usage = crate::llm::Usage::default();
-        let mut budget_warned = false;
+        // Seeded usage (checkpoint resume) counts toward the budget gate.
+        let mut total_usage = initial_usage.clone();
         loop {
             if turn >= max_turns {
                 self.runtime.publish(AgentEvent::TaskAborted {
@@ -285,7 +308,10 @@ impl Executor {
             crate::agent::executor_hooks::accumulate_usage(&mut total_usage, &response.usage);
 
             // Budget gate (P0): warn at the ratio, abort at the cap.
-            if check_budget(self, &mut budget_warned, &total_usage, memory) {
+            let mut warned = self.budget_warned;
+            let over_budget = check_budget(self, &mut warned, &total_usage, memory);
+            self.budget_warned = warned;
+            if over_budget {
                 aborted = true;
                 break;
             }
@@ -306,7 +332,25 @@ impl Executor {
                 break;
             }
         }
-        Ok((aborted, turn, total_usage))
+        // Return only the freshly accumulated usage: the caller already
+        // carries the seeded total (checkpoint resume).
+        let fresh = crate::llm::Usage {
+            prompt_tokens: total_usage.prompt_tokens.saturating_sub(initial_usage.prompt_tokens),
+            completion_tokens: total_usage
+                .completion_tokens
+                .saturating_sub(initial_usage.completion_tokens),
+            total_tokens: total_usage.total_tokens.saturating_sub(initial_usage.total_tokens),
+            cache_hit_tokens: total_usage
+                .cache_hit_tokens
+                .saturating_sub(initial_usage.cache_hit_tokens),
+            cache_miss_tokens: total_usage
+                .cache_miss_tokens
+                .saturating_sub(initial_usage.cache_miss_tokens),
+            reasoning_tokens: total_usage
+                .reasoning_tokens
+                .saturating_sub(initial_usage.reasoning_tokens),
+        };
+        Ok((aborted, turn, fresh))
     }
 
     /// Handle a single tool call: request approval via the event bus,

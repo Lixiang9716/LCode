@@ -12,7 +12,20 @@ pub async fn run(args: Cli, cfg: Config) -> anyhow::Result<()> {
         Command::Repl { prompt } => {
             crate::repl::start(prompt, cfg).await?;
         }
-        Command::Run { task, max_turns, auto_approve, stream } => {
+        Command::Run { task, max_turns, auto_approve, stream, resume } => {
+            if resume {
+                let store = crate::agent::CheckpointStore::new(&crate::agent::workspace_root()?);
+                let Some(checkpoint) = store.load() else {
+                    anyhow::bail!("no checkpoint to resume (the last run either finished or checkpointing is disabled)");
+                };
+                tracing::info!(turns = checkpoint.turns_used, "Resuming from checkpoint");
+                let outcome =
+                    crate::agent::run_task_resume(checkpoint, auto_approve, stream, &cfg).await?;
+                if !outcome.completed {
+                    std::process::exit(2);
+                }
+                return Ok(());
+            }
             let task_desc = task.join(" ");
             if task_desc.trim().is_empty() {
                 anyhow::bail!("Task description cannot be empty. Usage: lcode run \"<task>\"");
@@ -106,6 +119,7 @@ async fn handle_session(action: SessionAction, cfg: Config) -> anyhow::Result<()
                 false,
                 &cfg,
                 Some(memory),
+                None,
             )
             .await?;
             if !outcome.completed {

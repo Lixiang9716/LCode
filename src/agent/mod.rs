@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 
 mod assets_skill;
 mod background;
+mod checkpoint;
 mod compaction;
 mod cron;
 mod event;
@@ -70,6 +71,7 @@ pub use background::{
     register as register_background_tools, BackgroundCheckTool, BackgroundManager,
     BackgroundRunTool, BackgroundStatus, BackgroundTask,
 };
+pub use checkpoint::{Checkpoint, CheckpointSink, CheckpointStore, RunState};
 pub use compaction::{
     auto_compact, estimate_tokens, micro_compact, register as register_compact_tool, CompactTool,
     AUTO_COMPACT_THRESHOLD, KEEP_RECENT, PRESERVE_RESULT_TOOLS,
@@ -149,7 +151,42 @@ pub async fn run_task(
     stream: bool,
     config: &Config,
 ) -> anyhow::Result<TaskOutcome> {
-    run_task_with_memory(task, max_turns, auto_approve, stream, config, None).await
+    run_task_with_memory(task, max_turns, auto_approve, stream, config, None, None).await
+}
+
+/// Resume an interrupted session from a checkpoint (P1): the
+/// conversation, turn counter, usage total and budget-warning state
+/// continue exactly where the run stopped.
+pub async fn run_task_resume(
+    checkpoint: Checkpoint,
+    auto_approve: bool,
+    stream: bool,
+    config: &Config,
+) -> anyhow::Result<TaskOutcome> {
+    let store = CheckpointStore::new(&std::env::current_dir()?);
+    if !store.matches_workspace(&checkpoint) {
+        anyhow::bail!(
+            "checkpoint belongs to a different workspace ({}); refusing to resume",
+            checkpoint.workspace
+        );
+    }
+    let memory =
+        ConversationMemory::from_messages(config.agent.system_prompt.clone(), checkpoint.messages);
+    let state = RunState {
+        turns_used: checkpoint.turns_used,
+        usage: checkpoint.usage,
+        budget_warned: checkpoint.budget_warned,
+    };
+    run_task_with_memory(
+        &checkpoint.task,
+        config.agent.max_turns,
+        auto_approve,
+        stream,
+        config,
+        Some(memory),
+        Some(state),
+    )
+    .await
 }
 
 /// Build a full agent session: provider, registry with all session
@@ -255,6 +292,7 @@ pub async fn run_task_with_memory(
     stream: bool,
     config: &Config,
     initial_memory: Option<ConversationMemory>,
+    resume_state: Option<RunState>,
 ) -> anyhow::Result<TaskOutcome> {
     // Build the provider, tool registry, hooks, runtime and all session
     // tools. The provider powers the main loop, the compaction tool and
@@ -314,6 +352,7 @@ pub async fn run_task_with_memory(
         background,
         memory_store,
         team_bus,
+        resume_state,
     )
     .await
 }
@@ -341,6 +380,7 @@ async fn execute_session(
     background: Arc<BackgroundManager>,
     memory_store: Arc<crate::agent::MemoryStore>,
     team_bus: Arc<crate::agent::MessageBus>,
+    resume_state: Option<RunState>,
 ) -> anyhow::Result<TaskOutcome> {
     // Audit trail: every event lands in `.transcripts/events_{ts}.jsonl`
     // in arrival order. Subscribed before the renderer, so nothing is missed.
@@ -377,7 +417,27 @@ async fn execute_session(
     };
     let mut executor =
         Executor::new(build_provider(config)?, registry, auto_approve, runtime, session);
+    if let Some(state) = resume_state {
+        executor.seed(state);
+    }
+    // P1 checkpoint: attach the periodic writer when enabled; a
+    // completed session clears the checkpoint (nothing left to resume).
+    let checkpoint_store =
+        (config.agent.checkpoint_every_turns > 0).then(|| CheckpointStore::new(&workspace));
+    if let Some(store) = &checkpoint_store {
+        executor.set_checkpoint_sink(CheckpointSink::new(
+            store.clone(),
+            task,
+            &workspace,
+            config.agent.checkpoint_every_turns,
+        ));
+    }
     executor.run(task, &planner, memory, max_turns, stream).await?;
+    if !executor.aborted {
+        if let Some(store) = &checkpoint_store {
+            store.clear();
+        }
+    }
 
     // The executor owns the event-bus sender (via its runtime). Drop it
     // before awaiting the renderer, or the renderer never observes the

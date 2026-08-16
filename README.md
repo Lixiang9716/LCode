@@ -190,6 +190,8 @@ todo_nag_after_turns = 3       # turns without a todo update before the reminder
 workspace_aware = false        # true: 每轮注入 git 分支/状态/变更摘要（省去模型自跑 git）
                                # 建议 .gitignore 忽略 .transcripts/ .sessions/ .memory/ skills/
                                # 否则首轮注入的 status 会显示这些运行时目录
+checkpoint_every_turns = 5    # 每 N 轮存检查点（0=关闭）；中断后 lcode run --resume 续跑
+                               # 恢复会话轮次/用量/预算状态，剩余轮次与预算继续有效
 self_review = false            # true: 结束前内部 provider 审查，ISSUES 重启循环
 self_review_max_rounds = 1
 

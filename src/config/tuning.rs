@@ -308,6 +308,8 @@ pub struct RuntimeTuning {
     pub self_review_max_rounds: u32,
     /// Workspace-context injection at turn start.
     pub workspace_aware: bool,
+    /// Checkpoint cadence in turns (0 disables).
+    pub checkpoint_every_turns: u32,
 }
 
 impl RuntimeTuning {
@@ -331,6 +333,7 @@ impl RuntimeTuning {
             self_review: cfg.agent.self_review,
             self_review_max_rounds: cfg.agent.self_review_max_rounds,
             workspace_aware: cfg.agent.workspace_aware,
+            checkpoint_every_turns: cfg.agent.checkpoint_every_turns,
         }
     }
 }

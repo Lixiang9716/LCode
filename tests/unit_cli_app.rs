@@ -179,8 +179,13 @@ fn isolate_home(temp_dir: &tempfile::TempDir) {
 
 #[test]
 fn run_with_empty_task_returns_error() {
-    let cli =
-        cli_with(Command::Run { task: vec![], max_turns: 50, auto_approve: false, stream: false });
+    let cli = cli_with(Command::Run {
+        task: vec![],
+        max_turns: 50,
+        auto_approve: false,
+        stream: false,
+        resume: false,
+    });
     let err = run_blocking(cli, Config::default()).unwrap_err();
     assert!(
         err.to_string().contains("Task description cannot be empty"),
@@ -195,6 +200,7 @@ fn run_with_whitespace_only_task_returns_error() {
         max_turns: 50,
         auto_approve: false,
         stream: false,
+        resume: false,
     });
     assert!(run_blocking(cli, Config::default()).is_err());
 }

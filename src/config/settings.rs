@@ -207,6 +207,11 @@ pub struct AgentConfig {
     /// spending turns on `git status` itself. Off by default (opt-in).
     #[serde(default)]
     pub workspace_aware: bool,
+
+    /// Checkpoint the conversation every N turns (0 disables) so an
+    /// interrupted session can resume with `lcode run --resume`.
+    #[serde(default = "default_checkpoint_every_turns")]
+    pub checkpoint_every_turns: u32,
 }
 
 impl Default for AgentConfig {
@@ -222,6 +227,7 @@ impl Default for AgentConfig {
             self_review: false,
             self_review_max_rounds: default_self_review_max_rounds(),
             workspace_aware: false,
+            checkpoint_every_turns: default_checkpoint_every_turns(),
         }
     }
 }
@@ -372,6 +378,10 @@ pub fn default_test_until_green() -> bool {
 #[doc(hidden)]
 pub fn default_self_review_max_rounds() -> u32 {
     1
+}
+#[doc(hidden)]
+pub fn default_checkpoint_every_turns() -> u32 {
+    5
 }
 pub(super) fn default_true() -> bool {
     true
