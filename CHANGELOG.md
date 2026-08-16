@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/Lixiang9716/LCode/compare/v0.12.0...v0.13.0) (2026-08-16)
+
+
+### Features
+
+* **agent:** checkpoint resume for interrupted sessions (P1) ([08aeba5](https://github.com/Lixiang9716/LCode/commit/08aeba5147e9029a4b3c0c89445a5de94207846a))
+* **agent:** checkpoint resume for interrupted sessions (P1) ([8309a8a](https://github.com/Lixiang9716/LCode/commit/8309a8a788ac9042c38e9ddb04492b60e318188b))
+
+
+### Bug Fixes
+
+* **agent:** honest budget status on abort and doubled dollar signs ([ab61c54](https://github.com/Lixiang9716/LCode/commit/ab61c54d3bd8fdcf697fe9b7cced2c53a88dd381))
+* **cli:** --max-turns applies to resumed runs (CLI &gt; config) ([140acba](https://github.com/Lixiang9716/LCode/commit/140acba630847c9b27d79df0b7328c536195a5a7))
+
 ## [0.12.0](https://github.com/Lixiang9716/LCode/compare/v0.11.0...v0.12.0) (2026-08-16)
 
 
