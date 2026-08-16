@@ -201,6 +201,12 @@ pub struct AgentConfig {
     /// Restart rounds allowed for self-review fixes.
     #[serde(default = "default_self_review_max_rounds")]
     pub self_review_max_rounds: u32,
+
+    /// Inject a workspace-context block (git branch, status, diff stat)
+    /// at turn start, so the model sees repository state without
+    /// spending turns on `git status` itself. Off by default (opt-in).
+    #[serde(default)]
+    pub workspace_aware: bool,
 }
 
 impl Default for AgentConfig {
@@ -215,6 +221,7 @@ impl Default for AgentConfig {
             test_until_green: default_test_until_green(),
             self_review: false,
             self_review_max_rounds: default_self_review_max_rounds(),
+            workspace_aware: false,
         }
     }
 }

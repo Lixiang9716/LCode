@@ -122,6 +122,9 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     if let Ok(val) = std::env::var("LCODE_AGENT_SELF_REVIEW") {
         cfg.agent.self_review = val == "1" || val.eq_ignore_ascii_case("true");
     }
+    if let Ok(val) = std::env::var("LCODE_AGENT_WORKSPACE_AWARE") {
+        cfg.agent.workspace_aware = val == "1" || val.eq_ignore_ascii_case("true");
+    }
     set_usize_env("LCODE_COMPACTION_AUTO_THRESHOLD", &mut cfg.compaction.auto_threshold);
     set_usize_env("LCODE_COMPACTION_KEEP_RECENT", &mut cfg.compaction.keep_recent);
     set_usize_env("LCODE_COMPACTION_SUMMARY_TAIL_CHARS", &mut cfg.compaction.summary_tail_chars);
@@ -221,6 +224,9 @@ fn merge_agent(base: &mut AgentConfig, other: AgentConfig) {
     }
     if other.self_review_max_rounds != settings::default_self_review_max_rounds() {
         base.self_review_max_rounds = other.self_review_max_rounds;
+    }
+    if other.workspace_aware {
+        base.workspace_aware = true;
     }
 }
 

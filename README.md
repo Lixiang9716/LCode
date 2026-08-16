@@ -187,6 +187,11 @@ require_approval = true
 context_size = 128000
 skills_dir = "skills"          # optional; defaults to <workspace>/skills
 todo_nag_after_turns = 3       # turns without a todo update before the reminder
+workspace_aware = false        # true: 每轮注入 git 分支/状态/变更摘要（省去模型自跑 git）
+                               # 建议 .gitignore 忽略 .transcripts/ .sessions/ .memory/ skills/
+                               # 否则首轮注入的 status 会显示这些运行时目录
+self_review = false            # true: 结束前内部 provider 审查，ISSUES 重启循环
+self_review_max_rounds = 1
 
 [compaction]
 auto_threshold = 50000         # token budget before auto-compact

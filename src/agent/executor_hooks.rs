@@ -259,6 +259,7 @@ pub(crate) fn inject_turn_start(executor: &mut Executor, memory: &mut Conversati
     executor.inject_cron_triggers(memory);
     executor.inject_lead_inbox(memory);
     crate::agent::quality::inject_test_reminder(executor, memory);
+    crate::agent::workspace::inject_workspace_context(executor, memory);
 }
 
 /// Add one response's usage into the running session total (all fields,

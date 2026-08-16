@@ -55,6 +55,10 @@ pub enum AgentEvent {
     TaskAborted { reason: String },
     /// The session's hard cost budget was exceeded (P0 budget gate).
     BudgetExceeded { spent_usd: f64, budget_usd: f64 },
+    /// A workspace-context block was injected into the conversation
+    /// (P1 workspace awareness) — the audit trail needs the trace even
+    /// though user messages themselves are not persisted.
+    WorkspaceContext { branch: String },
     /// An unrecoverable error occurred.
     Error { message: String },
 
