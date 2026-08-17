@@ -33,7 +33,7 @@ jobs:
         run: scripts/e2e-battery.sh target/e2e-battery
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-battery-report
           path: target/e2e-battery/
